@@ -1,0 +1,40 @@
+Best Trial Found: 82
+Best Value (Winrate): 100.0000%
+Number of Trades: 25
+Number of Wins: 25
+Number of Losses: 0
+Total PnL: 5.8455
+Best Parameters:
+  activation_threshold: 5.0
+  adv_vwap_std_thr: 2.8000000000000003
+  adx_thresh: 51.0
+  allow_long: True
+  allow_short: True
+  close_position: False
+  cmf_thresh: 0.25
+  enable_breakeven: False
+  lookback_minutes: 4200
+  max_pct: 21.3
+  min_pct: 2.8000000000000003
+  min_trend_duration: 11
+  min_trend_strength: 3.8000000000000003
+  momentum_thresh: 0.004
+  obs_direction: minus
+  observation_hours: 2
+  rsi_buy: 68.0
+  rsi_exit_ob: 95.0
+  rsi_exit_os: 3.0
+  rsi_sell: 24.0
+  tp1: 2.5
+  tp2: 3.0
+  tp3: 3.8000000000000003
+  trailing_distance: 7.11
+  use_adv_vwap: True
+  use_adx: False
+  use_bb: True
+  use_cmf: True
+  use_macd: True
+  use_momentum: False
+  use_obv: True
+  use_standard_sl_tp: False
+  use_vwap: False
