@@ -11,7 +11,6 @@ from datetime import datetime
 import numpy as np
 import shutil
 import warnings
-
 # --- ML / SKLearn Imports ---
 try:
     from sklearn.model_selection import train_test_split
@@ -30,7 +29,7 @@ except ImportError:
 
 
 # --- Globale Einstellungen ---
-NUM_TRIALS = 100 # Erhöhe die Anzahl für sinnvolles ML
+NUM_TRIALS = 10000 # Erhöhe die Anzahl für sinnvolles ML
 ALL_RUNS_CSV = "all_runs_optimization_results_ml.csv" # Changed results filename
 PERFORMANCE_CSV = "total_symbol_performance.csv"
 
@@ -101,8 +100,8 @@ param_space = {
     'enable_breakeven': [True, False],
     'enable_trailing_take_profit': [True], # Wird in generate_random_params ggf. angepasst
     # Filterung & Beobachtung
-    'filtering_active': [False],
-    'beobachten_active': [False],
+    'filtering_active': [True, False],
+    'beobachten_active': [True, False],
     'seite': ['long', 'short', 'both'],
     'min_price_change_pct_min': lambda: round(random.uniform(0.5, 5.0), 2),
     'min_price_change_pct_max': lambda: round(random.uniform(5.1, 50.0), 2),
