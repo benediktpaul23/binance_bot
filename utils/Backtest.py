@@ -331,7 +331,7 @@ def fetch_data(symbol, interval=None, lookback_hours=None, end_time=None, start_
         klines = None
         for attempt in range(max_retries):
             try:
-                # check_rate_limit(weight=1) # Add rate limit check if necessary per batch
+                check_rate_limit(weight=1) # Add rate limit check if necessary per batch
                 klines = client.futures_klines( # Or client.get_klines depending on market
                     symbol=symbol, interval=interval, # startTime=start_ms, # Omit start initially
                     endTime=end_ms, limit=limit_for_this_batch
