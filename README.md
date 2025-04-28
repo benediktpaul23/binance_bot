@@ -1,4 +1,7 @@
-1. Z_config.py konfigurieren wie gewünscht
-2. Symbole in symbols.py eintragen
-3. 'python3 run_backtest.py' ausführen
-4. python3 'run_parameter_optimizer.py' ausführen
+0. Symbole in symbols.py eintragen
+
+1. python3 optimizer.py für zufällige parameter suche
+oder
+1. python3 run_backtest.py für ausgewählte parametersuche (mit Parameter-config) von Z_config
+
+
