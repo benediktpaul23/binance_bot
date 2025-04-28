@@ -1,0 +1,112 @@
+2025-04-28 23:36:36,264 - INFO - [OptimizationRunML:<module>:610] - =================================================
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:611] -  Starting ML-Guided Optimization Run: 100 Trials
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:613] -  ML Guidance ENABLED. Initial random: 15, Retrain every: 10, Target: 'profit_factor'
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:614] -  Minimum valid results for training: 10
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:615] -  Candidates per ML trial: 50
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:618] -  Results will be appended to: all_runs_optimization_results_ml.csv
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:619] -  Backtest performance file expected: total_symbol_performance.csv
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:620] -  --- REMINDER: Backtest.py should NOT delete its own outputs! ---
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:621] - =================================================
+2025-04-28 23:36:36,265 - INFO - [OptimizationRunML:<module>:631] - Original Z_config snapshot created successfully.
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:<module>:652] - -------------------------------------------------
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:<module>:653] - --- Starting Trial 1/100 ---
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:<module>:654] - -------------------------------------------------
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:<module>:724] - Trial 1: Generating parameters randomly (Random (Initial Phase))...
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:<module>:729] - Trial 1 Parameters (Random (Initial Phase)): {'use_standard_sl_tp': False, 'stop_loss_parameter_binance': 0.99, 'take_profit_parameter_binance': 1.0, 'activation_threshold': 0.55, 'trailing_distance': 0.48, 'adjustment_step': 0.95, 'third_level_trailing_distance': 4.83, 'enable_breakeven': False, 'enable_trailing_take_profit': True, 'filtering_active': False, 'beobachten_active': False, 'seite': 'both', 'min_price_change_pct_min': 2.5, 'min_price_change_pct_max': 8.94, 'price_change_lookback_minutes': 119, 'symbol_observation_hours': 10, 'close_position': True, 'allow_short': True, 'allow_long': True, 'filter_previous_day': False, 'previous_day_direction': 'bullish', 'require_timeframe_alignment': False, 'ema_fast_parameter': 22, 'ema_slow_parameter': 87, 'ema_baseline_parameter': 223, 'back_trend_periode': 10, 'min_trend_strength_parameter': 1.0, 'min_trend_duration_parameter': 3, 'rsi_period': 9, 'rsi_buy': 68, 'rsi_sell': 40, 'rsi_exit_overbought': 76, 'rsi_exit_oversold': 8, 'volume_sma': 42, 'volume_multiplier': 2.98, 'volume_entry_multiplier': 1.19, 'min_volume': 0.0898, 'use_momentum_check': True, 'momentum_lookback': 29, 'momentum': 0.2003, 'use_bb': True, 'bb_period': 40, 'bb_deviation': 3.31, 'use_macd': False, 'macd_fast_period': 21, 'macd_slow_period': 36, 'macd_signal_period': 5, 'use_adx': False, 'adx_period': 7, 'adx_threshold': 8, 'use_vwap': True, 'use_advanced_vwap': True, 'advanced_vwap_std_threshold': 1.21, 'use_obv': True, 'obv_period': 24, 'use_chaikin_money_flow': True, 'cmf_period': 39, 'cmf_threshold': -0.25, 'interval_int_2': '5m', 'interval_int_3': '5m'}
+2025-04-28 23:36:36,266 - INFO - [OptimizationRunML:modify_z_config:293] - Modifying Z_config attributes for the current trial...
+2025-04-28 23:36:36,267 - INFO - [OptimizationRunML:modify_z_config:319] - Attempted to modify 63 parameters. Modified: 63, Skipped: 0, Errors: 0.
+2025-04-28 23:36:36,770 - INFO - [OptimizationRunML:<module>:738] - Trial 1: Calling Backtest.main()...
+2025-04-28 23:40:08,884 - INFO - [OptimizationRunML:<module>:741] - Trial 1: Backtest.main() finished.
+2025-04-28 23:40:09,889 - INFO - [OptimizationRunML:<module>:745] - Trial 1: Reading performance results from total_symbol_performance.csv...
+2025-04-28 23:40:10,093 - INFO - [OptimizationRunML:<module>:756] - Successfully read 1 performance row(s) from total_symbol_performance.csv.
+2025-04-28 23:40:10,094 - INFO - [OptimizationRunML:<module>:795] - Trial 1: Aggregating results. Status: Success (1 perf rows)
+2025-04-28 23:40:10,099 - INFO - [OptimizationRunML:<module>:870] - Trial 1: Appended 1 row(s) to all_runs_optimization_results_ml.csv
+2025-04-28 23:40:10,100 - INFO - [OptimizationRunML:<module>:877] - Trial 1: Cleaning up temporary backtest output files...
+2025-04-28 23:40:10,100 - INFO - [OptimizationRunML:cleanup_backtest_outputs:348] - Cleaning up temporary backtest output files/dirs...
+2025-04-28 23:40:10,100 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/performance_summary.csv
+2025-04-28 23:40:10,101 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/24h_signals.csv
+2025-04-28 23:40:10,101 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/total_symbol_performance.csv
+2025-04-28 23:40:10,101 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/strategy_details.csv
+2025-04-28 23:40:10,103 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/trade_log.csv
+2025-04-28 23:40:10,104 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/full_data.csv
+2025-04-28 23:40:10,105 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/trades
+2025-04-28 23:40:10,106 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results
+2025-04-28 23:40:10,106 - INFO - [OptimizationRunML:cleanup_backtest_outputs:383] - Finished cleaning up temporary outputs for this trial.
+2025-04-28 23:40:10,611 - INFO - [OptimizationRunML:<module>:885] - Trial 1: Restoring original Z_config...
+2025-04-28 23:40:10,611 - INFO - [OptimizationRunML:restore_z_config:324] - Restoring original Z_config attributes...
+2025-04-28 23:40:10,612 - INFO - [OptimizationRunML:restore_z_config:338] - Restored 93 original attributes in Z_config. Errors: 0.
+2025-04-28 23:40:10,612 - INFO - [OptimizationRunML:<module>:892] - --- Trial 1 finished in 214.35 seconds. Status: Success (1 perf rows) ---
+2025-04-28 23:40:11,117 - INFO - [OptimizationRunML:<module>:652] - -------------------------------------------------
+2025-04-28 23:40:11,118 - INFO - [OptimizationRunML:<module>:653] - --- Starting Trial 2/100 ---
+2025-04-28 23:40:11,118 - INFO - [OptimizationRunML:<module>:654] - -------------------------------------------------
+2025-04-28 23:40:11,119 - INFO - [OptimizationRunML:<module>:724] - Trial 2: Generating parameters randomly (Random (Initial Phase))...
+2025-04-28 23:40:11,119 - INFO - [OptimizationRunML:<module>:729] - Trial 2 Parameters (Random (Initial Phase)): {'use_standard_sl_tp': True, 'stop_loss_parameter_binance': 0.0539, 'take_profit_parameter_binance': 0.0672, 'activation_threshold': 0.0, 'trailing_distance': 1.0, 'adjustment_step': 0.1, 'third_level_trailing_distance': 1.0, 'enable_breakeven': False, 'enable_trailing_take_profit': False, 'filtering_active': False, 'beobachten_active': False, 'seite': 'short', 'min_price_change_pct_min': 2.24, 'min_price_change_pct_max': 24.09, 'price_change_lookback_minutes': 309, 'symbol_observation_hours': 8, 'close_position': False, 'allow_short': True, 'allow_long': True, 'filter_previous_day': False, 'previous_day_direction': 'bullish', 'require_timeframe_alignment': False, 'ema_fast_parameter': 25, 'ema_slow_parameter': 65, 'ema_baseline_parameter': 61, 'back_trend_periode': 17, 'min_trend_strength_parameter': 2.54, 'min_trend_duration_parameter': 1, 'rsi_period': 20, 'rsi_buy': 85, 'rsi_sell': 30, 'rsi_exit_overbought': 91, 'rsi_exit_oversold': 15, 'volume_sma': 29, 'volume_multiplier': 4.33, 'volume_entry_multiplier': 1.67, 'min_volume': 0.5544, 'use_momentum_check': False, 'momentum_lookback': 10, 'momentum': 0.015, 'use_bb': True, 'bb_period': 11, 'bb_deviation': 3.82, 'use_macd': False, 'macd_fast_period': 21, 'macd_slow_period': 36, 'macd_signal_period': 5, 'use_adx': True, 'adx_period': 23, 'adx_threshold': 36.0, 'use_vwap': False, 'use_advanced_vwap': False, 'advanced_vwap_std_threshold': 0.9, 'use_obv': True, 'obv_period': 29, 'use_chaikin_money_flow': False, 'cmf_period': 1, 'cmf_threshold': 0.0, 'interval_int_2': '5m', 'interval_int_3': '5m'}
+2025-04-28 23:40:11,120 - INFO - [OptimizationRunML:modify_z_config:293] - Modifying Z_config attributes for the current trial...
+2025-04-28 23:40:11,120 - INFO - [OptimizationRunML:modify_z_config:319] - Attempted to modify 63 parameters. Modified: 63, Skipped: 0, Errors: 0.
+2025-04-28 23:40:11,621 - INFO - [OptimizationRunML:<module>:738] - Trial 2: Calling Backtest.main()...
+2025-04-28 23:43:32,242 - INFO - [OptimizationRunML:<module>:741] - Trial 2: Backtest.main() finished.
+2025-04-28 23:43:33,244 - INFO - [OptimizationRunML:<module>:745] - Trial 2: Reading performance results from total_symbol_performance.csv...
+2025-04-28 23:43:33,448 - INFO - [OptimizationRunML:<module>:756] - Successfully read 1 performance row(s) from total_symbol_performance.csv.
+2025-04-28 23:43:33,449 - INFO - [OptimizationRunML:<module>:795] - Trial 2: Aggregating results. Status: Success (1 perf rows)
+2025-04-28 23:43:33,455 - INFO - [OptimizationRunML:<module>:870] - Trial 2: Appended 1 row(s) to all_runs_optimization_results_ml.csv
+2025-04-28 23:43:33,455 - INFO - [OptimizationRunML:<module>:877] - Trial 2: Cleaning up temporary backtest output files...
+2025-04-28 23:43:33,455 - INFO - [OptimizationRunML:cleanup_backtest_outputs:348] - Cleaning up temporary backtest output files/dirs...
+2025-04-28 23:43:33,456 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/performance_summary.csv
+2025-04-28 23:43:33,456 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/24h_signals.csv
+2025-04-28 23:43:33,456 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/total_symbol_performance.csv
+2025-04-28 23:43:33,457 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/strategy_details.csv
+2025-04-28 23:43:33,458 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/trade_log.csv
+2025-04-28 23:43:33,459 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/full_data.csv
+2025-04-28 23:43:33,459 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/trades
+2025-04-28 23:43:33,460 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results
+2025-04-28 23:43:33,460 - INFO - [OptimizationRunML:cleanup_backtest_outputs:383] - Finished cleaning up temporary outputs for this trial.
+2025-04-28 23:43:33,961 - INFO - [OptimizationRunML:<module>:885] - Trial 2: Restoring original Z_config...
+2025-04-28 23:43:33,961 - INFO - [OptimizationRunML:restore_z_config:324] - Restoring original Z_config attributes...
+2025-04-28 23:43:33,961 - INFO - [OptimizationRunML:restore_z_config:338] - Restored 93 original attributes in Z_config. Errors: 0.
+2025-04-28 23:43:33,962 - INFO - [OptimizationRunML:<module>:892] - --- Trial 2 finished in 202.84 seconds. Status: Success (1 perf rows) ---
+2025-04-28 23:43:34,466 - INFO - [OptimizationRunML:<module>:652] - -------------------------------------------------
+2025-04-28 23:43:34,466 - INFO - [OptimizationRunML:<module>:653] - --- Starting Trial 3/100 ---
+2025-04-28 23:43:34,466 - INFO - [OptimizationRunML:<module>:654] - -------------------------------------------------
+2025-04-28 23:43:34,467 - INFO - [OptimizationRunML:<module>:724] - Trial 3: Generating parameters randomly (Random (Initial Phase))...
+2025-04-28 23:43:34,467 - INFO - [OptimizationRunML:<module>:729] - Trial 3 Parameters (Random (Initial Phase)): {'use_standard_sl_tp': True, 'stop_loss_parameter_binance': 0.0204, 'take_profit_parameter_binance': 0.0345, 'activation_threshold': 0.0, 'trailing_distance': 1.0, 'adjustment_step': 0.1, 'third_level_trailing_distance': 1.0, 'enable_breakeven': False, 'enable_trailing_take_profit': False, 'filtering_active': False, 'beobachten_active': False, 'seite': 'both', 'min_price_change_pct_min': 4.12, 'min_price_change_pct_max': 30.09, 'price_change_lookback_minutes': 594, 'symbol_observation_hours': 4, 'close_position': True, 'allow_short': True, 'allow_long': True, 'filter_previous_day': False, 'previous_day_direction': 'bullish', 'require_timeframe_alignment': False, 'ema_fast_parameter': 4, 'ema_slow_parameter': 132, 'ema_baseline_parameter': 72, 'back_trend_periode': 14, 'min_trend_strength_parameter': 3.78, 'min_trend_duration_parameter': 10, 'rsi_period': 20, 'rsi_buy': 80, 'rsi_sell': 41, 'rsi_exit_overbought': 87, 'rsi_exit_oversold': 4, 'volume_sma': 19, 'volume_multiplier': 4.29, 'volume_entry_multiplier': 2.65, 'min_volume': 0.1712, 'use_momentum_check': False, 'momentum_lookback': 10, 'momentum': 0.015, 'use_bb': False, 'bb_period': 21, 'bb_deviation': 2.5, 'use_macd': False, 'macd_fast_period': 21, 'macd_slow_period': 36, 'macd_signal_period': 5, 'use_adx': False, 'adx_period': 7, 'adx_threshold': 8, 'use_vwap': True, 'use_advanced_vwap': False, 'advanced_vwap_std_threshold': 0.9, 'use_obv': True, 'obv_period': 29, 'use_chaikin_money_flow': False, 'cmf_period': 1, 'cmf_threshold': 0.0, 'interval_int_2': '5m', 'interval_int_3': '5m'}
+2025-04-28 23:43:34,467 - INFO - [OptimizationRunML:modify_z_config:293] - Modifying Z_config attributes for the current trial...
+2025-04-28 23:43:34,467 - INFO - [OptimizationRunML:modify_z_config:319] - Attempted to modify 63 parameters. Modified: 63, Skipped: 0, Errors: 0.
+2025-04-28 23:43:34,972 - INFO - [OptimizationRunML:<module>:738] - Trial 3: Calling Backtest.main()...
+2025-04-28 23:45:52,812 - INFO - [OptimizationRunML:<module>:741] - Trial 3: Backtest.main() finished.
+2025-04-28 23:45:53,816 - INFO - [OptimizationRunML:<module>:745] - Trial 3: Reading performance results from total_symbol_performance.csv...
+2025-04-28 23:45:54,022 - INFO - [OptimizationRunML:<module>:756] - Successfully read 1 performance row(s) from total_symbol_performance.csv.
+2025-04-28 23:45:54,022 - INFO - [OptimizationRunML:<module>:795] - Trial 3: Aggregating results. Status: Success (1 perf rows)
+2025-04-28 23:45:54,027 - INFO - [OptimizationRunML:<module>:870] - Trial 3: Appended 1 row(s) to all_runs_optimization_results_ml.csv
+2025-04-28 23:45:54,027 - INFO - [OptimizationRunML:<module>:877] - Trial 3: Cleaning up temporary backtest output files...
+2025-04-28 23:45:54,027 - INFO - [OptimizationRunML:cleanup_backtest_outputs:348] - Cleaning up temporary backtest output files/dirs...
+2025-04-28 23:45:54,028 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/performance_summary.csv
+2025-04-28 23:45:54,028 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/24h_signals.csv
+2025-04-28 23:45:54,028 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/total_symbol_performance.csv
+2025-04-28 23:45:54,029 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/strategy_details.csv
+2025-04-28 23:45:54,030 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/trade_log.csv
+2025-04-28 23:45:54,031 - INFO - [OptimizationRunML:cleanup_backtest_outputs:367] -   - Deleted file: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results/full_data.csv
+2025-04-28 23:45:54,032 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/trades
+2025-04-28 23:45:54,032 - INFO - [OptimizationRunML:cleanup_backtest_outputs:378] -   - Removed directory tree: /Users/Beni/Desktop/Tradingbot/optimisierungstool/strategy_results
+2025-04-28 23:45:54,032 - INFO - [OptimizationRunML:cleanup_backtest_outputs:383] - Finished cleaning up temporary outputs for this trial.
+2025-04-28 23:45:54,535 - INFO - [OptimizationRunML:<module>:885] - Trial 3: Restoring original Z_config...
+2025-04-28 23:45:54,535 - INFO - [OptimizationRunML:restore_z_config:324] - Restoring original Z_config attributes...
+2025-04-28 23:45:54,535 - INFO - [OptimizationRunML:restore_z_config:338] - Restored 93 original attributes in Z_config. Errors: 0.
+2025-04-28 23:45:54,536 - INFO - [OptimizationRunML:<module>:892] - --- Trial 3 finished in 140.07 seconds. Status: Success (1 perf rows) ---
+2025-04-28 23:45:55,041 - INFO - [OptimizationRunML:<module>:652] - -------------------------------------------------
+2025-04-28 23:45:55,041 - INFO - [OptimizationRunML:<module>:653] - --- Starting Trial 4/100 ---
+2025-04-28 23:45:55,041 - INFO - [OptimizationRunML:<module>:654] - -------------------------------------------------
+2025-04-28 23:45:55,042 - INFO - [OptimizationRunML:<module>:724] - Trial 4: Generating parameters randomly (Random (Initial Phase))...
+2025-04-28 23:45:55,042 - INFO - [OptimizationRunML:<module>:729] - Trial 4 Parameters (Random (Initial Phase)): {'use_standard_sl_tp': False, 'stop_loss_parameter_binance': 0.99, 'take_profit_parameter_binance': 1.0, 'activation_threshold': 0.29, 'trailing_distance': 5.26, 'adjustment_step': 0.44, 'third_level_trailing_distance': 1.0, 'enable_breakeven': False, 'enable_trailing_take_profit': False, 'filtering_active': False, 'beobachten_active': False, 'seite': 'short', 'min_price_change_pct_min': 0.51, 'min_price_change_pct_max': 43.48, 'price_change_lookback_minutes': 409, 'symbol_observation_hours': 6, 'close_position': False, 'allow_short': True, 'allow_long': True, 'filter_previous_day': False, 'previous_day_direction': 'bearish', 'require_timeframe_alignment': False, 'ema_fast_parameter': 24, 'ema_slow_parameter': 137, 'ema_baseline_parameter': 192, 'back_trend_periode': 4, 'min_trend_strength_parameter': 1.76, 'min_trend_duration_parameter': 1, 'rsi_period': 16, 'rsi_buy': 77, 'rsi_sell': 39, 'rsi_exit_overbought': 80, 'rsi_exit_oversold': 24, 'volume_sma': 26, 'volume_multiplier': 0.99, 'volume_entry_multiplier': 2.79, 'min_volume': 0.1852, 'use_momentum_check': True, 'momentum_lookback': 27, 'momentum': 0.7283, 'use_bb': False, 'bb_period': 21, 'bb_deviation': 2.5, 'use_macd': False, 'macd_fast_period': 21, 'macd_slow_period': 36, 'macd_signal_period': 5, 'use_adx': False, 'adx_period': 7, 'adx_threshold': 8, 'use_vwap': False, 'use_advanced_vwap': True, 'advanced_vwap_std_threshold': 1.26, 'use_obv': True, 'obv_period': 17, 'use_chaikin_money_flow': True, 'cmf_period': 21, 'cmf_threshold': 0.11, 'interval_int_2': '5m', 'interval_int_3': '5m'}
+2025-04-28 23:45:55,043 - INFO - [OptimizationRunML:modify_z_config:293] - Modifying Z_config attributes for the current trial...
+2025-04-28 23:45:55,043 - INFO - [OptimizationRunML:modify_z_config:319] - Attempted to modify 63 parameters. Modified: 63, Skipped: 0, Errors: 0.
+2025-04-28 23:45:55,544 - INFO - [OptimizationRunML:<module>:738] - Trial 4: Calling Backtest.main()...
+2025-04-28 23:46:29,289 - INFO - [OptimizationRunML:<module>:741] - Trial 4: Backtest.main() finished.
+2025-04-28 23:46:29,473 - WARNING - [OptimizationRunML:<module>:783] - KeyboardInterrupt received during backtest phase. Stopping optimization.
+2025-04-28 23:46:29,473 - INFO - [OptimizationRunML:restore_z_config:324] - Restoring original Z_config attributes...
+2025-04-28 23:46:29,473 - INFO - [OptimizationRunML:restore_z_config:338] - Restored 93 original attributes in Z_config. Errors: 0.
+2025-04-28 23:46:29,473 - INFO - [OptimizationRunML:<module>:897] - =================================================
+2025-04-28 23:46:29,474 - INFO - [OptimizationRunML:<module>:898] -  Optimization Run Finished in 593.21 seconds
+2025-04-28 23:46:29,474 - INFO - [OptimizationRunML:<module>:899] -  Results saved in: all_runs_optimization_results_ml.csv
+2025-04-28 23:46:29,474 - INFO - [OptimizationRunML:<module>:901] -  ML model was used for guidance after trial 15.
+2025-04-28 23:46:29,474 - WARNING - [OptimizationRunML:<module>:956] - ML model or feature lists were not available/trained successfully. Skipping feature importance calculation.
+2025-04-28 23:46:29,474 - INFO - [OptimizationRunML:<module>:959] - =================================================

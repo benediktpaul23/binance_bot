@@ -1,5 +1,5 @@
 # Backtest - Z_config.py 
-lookback_hours_parameter = 24*7*3 #Wie viele Stunden zurück soll es Backtesten? | Parameter die gut funktioniert haben in 'lookback_hours_parameter' sind gleichzusetzen mit 'fetch' in Live-Bot-Config da diese symbole per Fifo danach aussoertiert werden.
+lookback_hours_parameter = 24*7*4*3 #Wie viele Stunden zurück soll es Backtesten? | Parameter die gut funktioniert haben in 'lookback_hours_parameter' sind gleichzusetzen mit 'fetch' in Live-Bot-Config da diese symbole per Fifo danach aussoertiert werden.
 
 
 use_custom_backtest_datetime = False

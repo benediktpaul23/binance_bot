@@ -1381,7 +1381,7 @@ def main(custom_start_time=None):
 def setup_logging():
     # Your implementation here
     logging.basicConfig(
-    level=logging.DEBUG,  # <--- ÄNDERE DIES AUF DEBUG
+    level=logging.INFO,  # <--- ÄNDERE DIES AUF DEBUG
     format='%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s] - %(message)s', # Format ggf. anpassen (funcName hinzugefügt)
     handlers=[
         logging.FileHandler('backtest.log', mode='w'), # 'w' überschreibt bei jedem Lauf

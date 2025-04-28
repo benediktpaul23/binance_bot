@@ -29,21 +29,8 @@ except ImportError:
 
 
 
-# --- Logging Setup ---
-log_filename_opt = 'optimization_run_ml.log' # Changed log filename
-logger_opt = logging.getLogger("OptimizationRunML") # Changed logger name
-if not logger_opt.hasHandlers():
-    logger_opt.setLevel(logging.INFO)
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s')
-    file_handler = logging.FileHandler(log_filename_opt, mode='w')
-    file_handler.setFormatter(log_formatter)
-    logger_opt.addHandler(file_handler)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(log_formatter)
-    logger_opt.addHandler(stream_handler)
-
 # --- Globale Einstellungen ---
-NUM_TRIALS = 50 # Erhöhe die Anzahl für sinnvolles ML
+NUM_TRIALS = 100 # Erhöhe die Anzahl für sinnvolles ML
 ALL_RUNS_CSV = "all_runs_optimization_results_ml.csv" # Changed results filename
 PERFORMANCE_CSV = "total_symbol_performance.csv"
 
@@ -59,6 +46,26 @@ MIN_DATA_FOR_TRAINING = 10     # Mindestanzahl gültiger (!) Ergebnisse für das
 
 TARGET_METRIC = 'profit_factor' # Welche Spalte aus PERFORMANCE_CSV soll optimiert werden? (Maximieren)
 MIN_DATA_FOR_TRAINING = 10     # Mindestanzahl gültiger (!) Ergebnisse für das erste Training
+
+
+
+
+
+
+
+# --- Logging Setup ---
+log_filename_opt = 'optimization_run_ml.log' # Changed log filename
+logger_opt = logging.getLogger("OptimizationRunML") # Changed logger name
+if not logger_opt.hasHandlers():
+    logger_opt.setLevel(logging.INFO)
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s')
+    file_handler = logging.FileHandler(log_filename_opt, mode='w')
+    file_handler.setFormatter(log_formatter)
+    logger_opt.addHandler(file_handler)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(log_formatter)
+    logger_opt.addHandler(stream_handler)
+
 
 # NEU: Globale Definition der erwarteten Performance-Spalten
 # Passe diese Liste ggf. an die tatsächlichen Spalten deiner total_symbol_performance.csv an!
