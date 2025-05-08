@@ -1,11 +1,11 @@
 symbol_liste = [
-    "FARTCOINUSDT", 
+    "1000WHYUSDT"
+
 ]
 
 """
 
 symbol_liste = [
-    "SYMBOL"
 ]
 
 

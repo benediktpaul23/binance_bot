@@ -20,31 +20,99 @@ class BacktestPositionTracker:
     Tracks positions during backtesting, handles standard and advanced position management.
     """
     def __init__(self):
-        # Configuration parameters (fetch safely using getattr)
+        # --- Basis-Konfiguration lesen ---
+        # Liest den Wert, den der Optimizer für diesen Trial gesetzt hat
         self.use_standard_sl_tp = getattr(Z_config, 'use_standard_sl_tp', False)
         self.commission_rate = getattr(Z_config, 'taker_fee_parameter', 0.00045)
 
-        # Standard SL/TP parameters (only if use_standard_sl_tp is True)
-        self.take_profit_parameter = 0.03 # Default TP if not set
-        self.stop_loss_parameter = 0.02 # Default SL if not set
+        # --- Interne Defaults (können unten überschrieben werden) ---
+        self.take_profit_parameter = 0.03
+        self.stop_loss_parameter = 0.02
+
+        # --- Logik basierend auf dem Modus (Standard oder Advanced) ---
         if self.use_standard_sl_tp:
-            self.take_profit_parameter = getattr(Z_config, 'take_profit_parameter', self.take_profit_parameter)
-            self.stop_loss_parameter = getattr(Z_config, 'stop_loss_parameter', self.stop_loss_parameter)
-            logging.info(f"Tracker Init: Using Standard SL ({self.stop_loss_parameter*100:.2f}%) / TP ({self.take_profit_parameter*100:.2f}%)")
+            # --- Standard SL/TP Modus ---
+            # Lies die _binance Parameter, da diese vom Optimizer gesetzt werden
+            tp_val_from_config = getattr(Z_config, 'take_profit_parameter_binance', self.take_profit_parameter) # _binance Name verwenden
+            sl_val_from_config = getattr(Z_config, 'stop_loss_parameter_binance', self.stop_loss_parameter)     # _binance Name verwenden
+
+            # Validiere und setze den Take Profit Parameter
+            if tp_val_from_config is None:
+                logging.error("Z_config.take_profit_parameter_binance is None! Using default 0.03")
+                self.take_profit_parameter = 0.03 # Fallback
+            else:
+                try:
+                    self.take_profit_parameter = float(tp_val_from_config) # Sicher zu float konvertieren
+                except (ValueError, TypeError):
+                    logging.error(f"Invalid value for Z_config.take_profit_parameter_binance: '{tp_val_from_config}'. Using default 0.03")
+                    self.take_profit_parameter = 0.03
+
+            # Validiere und setze den Stop Loss Parameter
+            if sl_val_from_config is None:
+                logging.error("Z_config.stop_loss_parameter_binance is None! Using default 0.02")
+                self.stop_loss_parameter = 0.02 # Fallback
+            else:
+                try:
+                    self.stop_loss_parameter = float(sl_val_from_config) # Sicher zu float konvertieren
+                except (ValueError, TypeError):
+                     logging.error(f"Invalid value for Z_config.stop_loss_parameter_binance: '{sl_val_from_config}'. Using default 0.02")
+                     self.stop_loss_parameter = 0.02
+
+            # Logge die verwendeten Werte (nur wenn sie gültig sind)
+            if isinstance(self.stop_loss_parameter, (int, float)) and isinstance(self.take_profit_parameter, (int, float)):
+                 logging.info(f"Tracker Init (Standard): Using SL from _binance ({self.stop_loss_parameter*100:.2f}%) / TP from _binance ({self.take_profit_parameter*100:.2f}%)")
+            else:
+                 # Sollte durch obige Fehlerbehandlung nicht erreicht werden, aber als Absicherung
+                 logging.error(f"Tracker Init (Standard): Could not log SL/TP as values are invalid after processing. SL={self.stop_loss_parameter}, TP={self.take_profit_parameter}")
+
         else:
-             # Advanced parameters (only if use_standard_sl_tp is False)
+             # --- Advanced Parameter Modus (Trailing, Multi-TP) ---
+             # Lade die Parameter für den Advanced Modus
              self.trailing_activation_threshold = getattr(Z_config, 'activation_threshold', 0.5)
              self.trailing_distance = getattr(Z_config, 'trailing_distance', 1.9)
-             self.take_profit_levels = getattr(Z_config, 'take_profit_levels', [1.8, 3.7, 4.0])
-             self.take_profit_size_percentages = getattr(Z_config, 'take_profit_size_percentages', [35, 35, 30])
+
+             # Behandle Listenparameter, die vom Optimizer evtl. als String kommen
+             tp_levels_val = getattr(Z_config, 'take_profit_levels', [1.8, 3.7, 4.0])
+             if isinstance(tp_levels_val, str):
+                 try:
+                     # Versuche, den String sicher zu evaluieren (Vorsicht bei eval!)
+                     self.take_profit_levels = eval(tp_levels_val)
+                     if not isinstance(self.take_profit_levels, list): raise ValueError("Eval did not return a list")
+                 except Exception as e:
+                     logging.warning(f"Could not eval take_profit_levels string '{tp_levels_val}': {e}. Using default.")
+                     self.take_profit_levels = [1.8, 3.7, 4.0]
+             elif isinstance(tp_levels_val, list):
+                 self.take_profit_levels = tp_levels_val
+             else:
+                 logging.warning(f"Invalid type for take_profit_levels ('{type(tp_levels_val)}'). Using default.")
+                 self.take_profit_levels = [1.8, 3.7, 4.0]
+
+             tp_size_val = getattr(Z_config, 'take_profit_size_percentages', [35, 35, 30])
+             if isinstance(tp_size_val, str):
+                 try:
+                     # Versuche, den String sicher zu evaluieren
+                     self.take_profit_size_percentages = eval(tp_size_val)
+                     if not isinstance(self.take_profit_size_percentages, list): raise ValueError("Eval did not return a list")
+                 except Exception as e:
+                     logging.warning(f"Could not eval take_profit_size_percentages string '{tp_size_val}': {e}. Using default.")
+                     self.take_profit_size_percentages = [35, 35, 30]
+             elif isinstance(tp_size_val, list):
+                 self.take_profit_size_percentages = tp_size_val
+             else:
+                 logging.warning(f"Invalid type for take_profit_size_percentages ('{type(tp_size_val)}'). Using default.")
+                 self.take_profit_size_percentages = [35, 35, 30]
+
              self.third_level_trailing_distance = getattr(Z_config, 'third_level_trailing_distance', 2.5)
              self.enable_breakeven = getattr(Z_config, 'enable_breakeven', False)
              self.enable_trailing_take_profit = getattr(Z_config, 'enable_trailing_take_profit', True)
+
              logging.info("Tracker Init: Using Advanced Position Management (Trailing/Multi-TP)")
 
 
-        # Dictionary to store position data for each symbol
+        # --- Initialisierung des Positions-Speichers ---
+        # Dieses Dictionary speichert die Daten für jede aktive Position pro Symbol
         self.positions = {}
+
 
     def open_position(self, symbol, entry_price, position_type, quantity, entry_time):
         """Open a new position and initialize its state."""

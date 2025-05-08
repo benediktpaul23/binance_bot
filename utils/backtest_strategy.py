@@ -1688,7 +1688,8 @@ def calculate_required_candles():
             getattr(Z_config, 'obv_period', 11), # OBV Periode weniger relevant
             getattr(Z_config, 'cmf_period', 30),
             getattr(Z_config, 'reversal_lookback_period', 20), # Aus Live
-            getattr(Z_config, 'atr_period_parameter', 14)
+            getattr(Z_config, 'atr_period_parameter', 14),
+            getattr(Z_config, 'hoechste_zahl_advanced_vwap', 100)
             # Füge HIER weitere relevante Perioden hinzu!
         ]
         numeric_periods = [p for p in required_periods if isinstance(p, (int, float)) and p is not None and p > 0]

@@ -902,38 +902,15 @@ def validate_and_fix_config():
     """
     if hasattr(Z_config, 'use_standard_sl_tp') and Z_config.use_standard_sl_tp:
         # Wenn Standard SL/TP aktiv ist, müssen die erweiterten Parameter deaktiviert werden
-        if hasattr(Z_config, 'enable_breakeven') and Z_config.enable_breakeven:
             print("WARNUNG: use_standard_sl_tp=True, setze enable_breakeven=False")
-            Z_config.enable_breakeven = False
-            
-        if hasattr(Z_config, 'enable_trailing_take_profit') and Z_config.enable_trailing_take_profit:
             print("WARNUNG: use_standard_sl_tp=True, setze enable_trailing_take_profit=False")
+            Z_config.enable_breakeven = False
             Z_config.enable_trailing_take_profit = False
-            
-        print("Konfiguration validiert: Standard SL/TP aktiv, erweiterte Parameter deaktiviert")
-        
-        # Überprüfe, ob die binance parameter gesetzt sind
-        if not hasattr(Z_config, 'stop_loss_parameter_binance') or not hasattr(Z_config, 'take_profit_parameter_binance'):
-            print("WARNUNG: Standard SL/TP aktiv, aber stop_loss_parameter_binance oder take_profit_parameter_binance fehlen!")
-            # Verwende Standardwerte, falls nicht konfiguriert
-            if not hasattr(Z_config, 'stop_loss_parameter_binance'):
-                Z_config.stop_loss_parameter_binance = 0.05
-                print(f"  stop_loss_parameter_binance auf Standardwert {Z_config.stop_loss_parameter_binance} gesetzt")
-            if not hasattr(Z_config, 'take_profit_parameter_binance'):
-                Z_config.take_profit_parameter_binance = 0.05
-                print(f"  take_profit_parameter_binance auf Standardwert {Z_config.take_profit_parameter_binance} gesetzt")
+
     else:
-        # Wenn erweiterte Position Management verwendet wird, überprüfe die Konfiguration
-        if not hasattr(Z_config, 'activation_threshold') or not hasattr(Z_config, 'trailing_distance'):
-            print("WARNUNG: Erweitertes Position Management aktiv, aber einige Parameter fehlen!")
-        
-        # Protokolliere die aktiven erweiterten Features
-        breakeven_active = Z_config.enable_breakeven if hasattr(Z_config, 'enable_breakeven') else False
-        trailing_tp_active = Z_config.enable_trailing_take_profit if hasattr(Z_config, 'enable_trailing_take_profit') else False
-        
-        print(f"Konfiguration validiert: Verwende erweitertes Position Management")
-        print(f"  - Breakeven aktiviert: {breakeven_active}")
-        print(f"  - Trailing Take Profit aktiviert: {trailing_tp_active}")
+        if Z_config.use_standard_sl_tp == False:
+            Z_config.enable_trailing_take_profit = True
+
 
 import Z_config
 import utils.backtest_strategy as backtest_strategy
@@ -1234,7 +1211,9 @@ def main(custom_start_time=None):
 
         # --- Konfiguration und Setup ---
         logging.debug("Validating configuration...")
+        time.sleep(1)
         validate_and_fix_config() # Deine Funktion
+        time.sleep(1)
 
         SYMBOLS = list(set(symbol_liste)) # Lade deine Symbole
         logging.info(f"Loaded {len(SYMBOLS)} unique symbols.")

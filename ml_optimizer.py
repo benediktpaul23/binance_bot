@@ -11,6 +11,7 @@ from datetime import datetime
 import numpy as np
 import shutil
 import warnings
+
 # --- ML / SKLearn Imports ---
 try:
     from sklearn.model_selection import train_test_split
@@ -87,8 +88,8 @@ ml_feature_names = None # Store feature names used during training
 param_space = {
     # Standard SL/TP oder Trailing
     'use_standard_sl_tp': [True, False],
-    'stop_loss_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 4),
-    'take_profit_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 4),
+    'stop_loss_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 3),
+    'take_profit_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 3),
     # Trailing Stop Parameter
     'activation_threshold': lambda: round(random.uniform(0.1, 1.0), 2),
     'trailing_distance': lambda: round(random.uniform(0.2, 6.0), 2),
@@ -98,10 +99,9 @@ param_space = {
     # 'take_profit_size_percentages': lambda: [100], # Wird in generate_random_params dynamisch gesetzt
     'third_level_trailing_distance': lambda: round(random.uniform(0.5, 6.0), 2),
     'enable_breakeven': [True, False],
-    'enable_trailing_take_profit': [True], # Wird in generate_random_params ggf. angepasst
     # Filterung & Beobachtung
-    'filtering_active': [True, False],
-    'beobachten_active': [True, False],
+    'filtering_active': [False],
+    'beobachten_active': [False],
     'seite': ['long', 'short', 'both'],
     'min_price_change_pct_min': lambda: round(random.uniform(0.5, 5.0), 2),
     'min_price_change_pct_max': lambda: round(random.uniform(5.1, 50.0), 2),
@@ -138,7 +138,7 @@ param_space = {
     # Momentum
     'use_momentum_check': [True, False],
     'momentum_lookback': lambda: random.randint(2, 40),
-    'momentum': lambda: round(random.uniform(0.01, 1.0), 4),
+    'momentum': lambda: round(random.uniform(0.01, 1.0), 2),
     # Bollinger Bands
     'use_bb': [True, False],
     'bb_period': lambda: random.randint(10, 50),
@@ -802,21 +802,23 @@ if __name__ == "__main__":
                 return np.nan # Konvertiere ungültige Werte zu NaN
 
         if performance_data is not None and not performance_data.empty:
-            # Es gibt Performance-Daten (können mehrere Zeilen sein)
-            for _, perf_row in performance_data.iterrows():
-                 row_dict = {
-                     'trial': trial_num + 1,
-                     'selected_by': selected_by,
-                     'error': None, # Kein Fehler hier, da Performance Daten vorhanden sind
-                     **current_parameters, # Füge Parameter hinzu
-                 }
-                 # Füge Performance-Metriken hinzu, versuche Konvertierung zu float
-                 for col, val in perf_row.items():
-                      if col in known_performance_cols: # Nur bekannte Performance-Spalten versuchen zu konvertieren
-                           row_dict[col] = safe_float_convert(val)
-                      elif col not in row_dict: # Andere Spalten (z.B. 'symbol') direkt übernehmen
-                           row_dict[col] = val
-                 trial_results_list_for_append.append(row_dict)
+            for _, perf_row in performance_data.iterrows(): # Loop through rows from total_symbol_performance.csv
+                row_dict = {
+                    'trial': trial_num + 1,
+                    'selected_by': selected_by,
+                    'error': None,
+                    **current_parameters, # Add parameters first
+                }
+                # Add performance metrics
+                for col, val in perf_row.items(): # Iterate through columns of the performance row
+                    if col not in row_dict: # Check if column is NOT already a parameter
+                        if col == 'symbol': # <<< FIX: Handle 'symbol' explicitly first
+                            row_dict[col] = val # Assign the string value directly
+                        elif col in known_performance_cols: # Now process other known performance cols
+                            row_dict[col] = safe_float_convert(val) # Convert numeric ones to float
+                        else: # Handle any other unexpected columns from performance_data
+                            row_dict[col] = val
+                trial_results_list_for_append.append(row_dict)
         else:
             # Keine Performance-Daten vorhanden (Fehler, keine Trades etc.)
             error_row = {
