@@ -143,7 +143,7 @@ logger_proc_obs = logging.getLogger(__name__)
 
 def process_observation_period_with_full_data(
     symbol,
-    full_df_raw, # Erhält Rohdaten + evtl. Alignment-Trends
+    precalculated_full_df, # Erhält DataFrame mit ALLEN vorab berechneten Indikatoren
     period,
     use_ut_bot=False,
     position_tracking=None,
@@ -151,22 +151,19 @@ def process_observation_period_with_full_data(
     observed_symbols=None
 ):
     """
-    MODIFIED (Based on Response #11 and User Request): Verarbeitet einen Beobachtungszeitraum.
-    1. Berechnet Standard-Indikatoren (VEKTORISIERT, inkl. vorläufigem OBV - wird später entfernt).
-    2. Berechnet EMAs ITERATIV und fügt sie als *_iter Spalten hinzu.
-    3. Berechnet OBV ITERATIV und fügt obv_iter, obv_trend_iter hinzu.
-    4. Wendet Zeitfilter an.
-    5. Setzt Kontext-Flags basierend auf 'period'.
-    6. Generiert Signale mit apply_base_strategy (nutzt *_iter EMAs und _iter OBV).
-    7. Filtert Daten für die Trade-Verarbeitung.
-    8. Führt Trendstärkeprüfung durch.
-    9. Ruft process_symbol für die Trade-Logik auf.
-    10. Aktualisiert den globalen State.
+    MODIFIED: Verarbeitet einen Beobachtungszeitraum mit vorab berechneten Indikatoren.
+    1. Wendet Zeitfilter an.
+    2. Setzt Kontext-Flags basierend auf 'period'.
+    3. Generiert Signale mit apply_base_strategy (nutzt *_iter EMAs und _iter OBV aus precalculated_full_df).
+    4. Filtert Daten für die Trade-Verarbeitung.
+    5. Führt Trendstärkeprüfung durch.
+    6. Ruft process_symbol für die Trade-Logik auf.
+    7. Aktualisiert den globalen State.
 
     Args:
         symbol (str): Trading-Symbol
-        full_df_raw (pd.DataFrame): Vollständiger DataFrame mit OHLCV, is_complete, is_warmup
-                                    und evtl. Alignment-Trends (von get_multi_timeframe_data).
+        precalculated_full_df (pd.DataFrame): Vollständiger DataFrame mit OHLCV, is_complete, is_warmup
+                                             UND ALLEN vorab berechneten Indikatoren (Standard + Iterativ).
         period (dict): Dictionary mit start_time, end_time, price_change_pct.
         use_ut_bot (bool): Ob UT Bot verwendet werden soll.
         position_tracking (dict): Globaler Positionsstatus.
@@ -174,19 +171,21 @@ def process_observation_period_with_full_data(
         observed_symbols (dict): Protokollierte beobachtete Symbole.
 
     Returns:
-        Tuple mit (df_processed_final, trades, performance) oder (None, [], {}) bei Fehlern.
-        df_processed_final enthält Rohdaten, Indikatoren (Standard + iterativ), Flags und Signale.
+        Tuple mit (df_processed_final, trades, performance) oder (precalculated_full_df, [], {}) bei Fehlern
+        vor der Signalgenerierung.
+        df_processed_final enthält den (zeitgefilterten) precalculated_full_df mit zusätzlichen Flags und Signalen.
     """
     log_prefix = f"process_obs ({symbol})"
-    logger_proc_obs = logging.getLogger(f"{__name__}.{log_prefix}") # Eigener Logger pro Aufruf/Symbol
-    logger_proc_obs.debug(f"Starting processing.")
+    logger_proc_obs = logging.getLogger(f"{__name__}.{log_prefix}")
+    logger_proc_obs.debug(f"Starting processing with precalculated indicators.")
 
     # --- Initial Checks ---
     if position_tracking is None or active_observation_periods is None or observed_symbols is None:
         logger_proc_obs.error(f"CRITICAL - Tracking dictionaries not passed!")
-        return None, [], {}
-    if full_df_raw is None or full_df_raw.empty:
-        logger_proc_obs.error(f"✗ No raw data available (full_df_raw).")
+        # Gebe den unveränderten precalculated_full_df zurück, falls er existiert, sonst None
+        return precalculated_full_df if precalculated_full_df is not None else None, [], {}
+    if precalculated_full_df is None or precalculated_full_df.empty:
+        logger_proc_obs.error(f"✗ No precalculated data available (precalculated_full_df).")
         return None, [], {}
 
     # --- Zeitrahmen validieren ---
@@ -195,263 +194,128 @@ def process_observation_period_with_full_data(
     price_change_pct = period.get('price_change_pct', 0)
     if not all(isinstance(t, datetime) and t.tzinfo is not None for t in [observation_start_time, observation_end_time]):
         logger_proc_obs.error(f"Invalid or non-TZ-aware period start/end times ({observation_start_time}, {observation_end_time}).")
-        return None, [], {}
+        return precalculated_full_df, [], {}
     observation_start_time = observation_start_time.astimezone(timezone.utc)
     observation_end_time = observation_end_time.astimezone(timezone.utc)
 
     logger_proc_obs.info(f"Processing Period: {observation_start_time} -> {observation_end_time} (Price Change: {price_change_pct:.2f}%)")
 
-    # --- Schritt 1: Standard-Indikatoren berechnen ---
-    # WICHTIG: calculate_indicators sollte den Standard-OBV NICHT mehr berechnen (siehe Plan Schritt 3)
-    logger_proc_obs.debug(f"Calculating STANDARD indicators (excl. OBV) on raw_df (shape: {full_df_raw.shape})...")
-    try:
-        df_with_std_indicators = indicators.calculate_indicators(full_df_raw.copy(), calculate_for_alignment_only=False)
-    except AttributeError:
-        logger_proc_obs.critical(f"Function 'indicators.calculate_indicators' not found!")
-        return None, [], {}
-    except Exception as e:
-        logger_proc_obs.error(f"Error during standard indicator calculation: {e}", exc_info=True)
-        return None, [], {}
-
-    if df_with_std_indicators is None:
-        logger_proc_obs.error(f"Standard indicator calculation failed (returned None).")
-        return None, [], {}
-    logger_proc_obs.debug(f"Standard indicators calculated. DF shape: {df_with_std_indicators.shape}")
-
-    # --- Schritt 1b: Iterative EMAs berechnen ---
-    logger_proc_obs.debug(f"Calculating ITERATIVE EMAs...")
-    required_candles_ema = 0 # Init
-    try:
-        required_candles_ema = backtest_strategy.calculate_required_candles() # Hole die Anzahl erneut
-        logger_proc_obs.info(f"Using required_candles={required_candles_ema} for iterative EMA calculation.")
-        df_with_iter_ema = indicators.calculate_ema_iterative(df_with_std_indicators, required_candles_ema)
-    except AttributeError:
-        logger_proc_obs.critical(f"Function 'indicators.calculate_ema_iterative' or 'calculate_required_candles' not found!")
-        return None, [], {}
-    except Exception as e:
-        logger_proc_obs.error(f"Error during iterative EMA calculation: {e}", exc_info=True)
-        return None, [], {}
-
-    if df_with_iter_ema is None:
-        logger_proc_obs.error(f"Iterative EMA calculation failed (returned None).")
-        # Fallback: Nutze den DataFrame mit Standard-Indikatoren weiter
-        df_with_iter_ema = df_with_std_indicators.copy() # Arbeite mit Kopie
-        logger_proc_obs.warning(f"Proceeding with standard EMA values due to iterative calculation error.")
-        # Füge leere _iter Spalten hinzu, damit apply_base_strategy nicht fehlschlägt
-        df_with_iter_ema['ema_fast_iter'] = df_with_iter_ema.get('ema_fast', np.nan)
-        df_with_iter_ema['ema_slow_iter'] = df_with_iter_ema.get('ema_slow', np.nan)
-        df_with_iter_ema['ema_baseline_iter'] = df_with_iter_ema.get('ema_baseline', np.nan)
-    else:
-         # Stelle sicher, dass wir mit einer Kopie weiterarbeiten, falls nötig
-         df_with_iter_ema = df_with_iter_ema.copy()
-
-    logger_proc_obs.debug(f"Iterative EMAs calculated/handled. Proceeding...")
-
-    # --- Schritt 1c: Iterative OBV-Berechnung Hinzufügen ---
-    logger_proc_obs.debug(f"Calculating ITERATIVE OBV...")
-    df_with_iter_ema['obv_iter'] = np.nan # Neue Spalte initialisieren
-    df_with_iter_ema['obv_trend_iter'] = 0 # Neue Trend-Spalte initialisieren
-
-    # Finde ersten Backtest-Index (wo is_warmup False ist)
-    non_warmup_indices_iter = df_with_iter_ema[~df_with_iter_ema['is_warmup']].index
-    first_backtest_iloc_iter = -1
-    if not non_warmup_indices_iter.empty:
-        try:
-            first_backtest_iloc_iter = df_with_iter_ema.index.get_loc(non_warmup_indices_iter[0])
-        except KeyError:
-             logger_proc_obs.error(f"Could not find first non-warmup index for iterative OBV.")
-
-    if first_backtest_iloc_iter != -1:
-        required_candles_obv = 0 # Init
-        try:
-             # Verwende die GLEICHE Funktion/Logik wie für EMA, um Konsistenz zu wahren
-             required_candles_obv = backtest_strategy.calculate_required_candles()
-             if required_candles_obv <= 0: # Sicherheitscheck
-                 logger_proc_obs.error(f"calculate_required_candles returned invalid value: {required_candles_obv}. Using fallback 100.")
-                 required_candles_obv = 100
-        except NameError:
-             logger_proc_obs.error(f"backtest_strategy.calculate_required_candles not found for OBV iter! Using fallback 100.")
-             required_candles_obv = 100 # Fallback, anpassen!
-        except Exception as req_err:
-             logger_proc_obs.error(f"Error getting required_candles for OBV: {req_err}. Using fallback 100.")
-             required_candles_obv = 100
-
-        logger_proc_obs.info(f"Starting iterative OBV loop from index {first_backtest_iloc_iter} using required_candles={required_candles_obv}")
-
-        # --- Iterative OBV Schleife ---
-        for i in tqdm(range(first_backtest_iloc_iter, len(df_with_iter_ema)), desc=f"{log_prefix} OBV Iter", unit="candle", leave=False):
-            current_ts_iter = df_with_iter_ema.index[i]
-
-            # Slice: Genau N Kerzen, endend mit der aktuellen Kerze i
-            # N = required_candles_obv
-            start_slice_iloc_iter = max(0, i - required_candles_obv + 1) # +1 damit der Slice N lang ist
-            end_slice_iloc_iter = i + 1 # Aktuelle Kerze einschließen
-
-            # Prüfe, ob der Slice gültig ist (mindestens 2 Punkte für diff())
-            if end_slice_iloc_iter - start_slice_iloc_iter < 2:
-                 # Für die allererste(n) Berechnung(en) kann OBV 0 sein
-                 df_with_iter_ema.loc[current_ts_iter, 'obv_iter'] = 0.0
-                 if i % 100 == 0: # Gelegentliches Logging
-                      logger_proc_obs.debug(f"OBV Iter {i}: Slice too short ({end_slice_iloc_iter - start_slice_iloc_iter}), setting OBV to 0.")
-                 continue
-
-            data_slice_iter = df_with_iter_ema.iloc[start_slice_iloc_iter:end_slice_iloc_iter]
-
-            # Rufe die Standard OBV Funktion auf dem SLICE auf
-            try:
-                # Stelle sicher, dass close und volume nicht nur NaNs enthalten im Slice
-                if data_slice_iter['close'].notna().any() and data_slice_iter['volume'].notna().any():
-                    # Wichtig: Symbol mitgeben für interne Logs der OBV Funktion
-                    obv_series_slice = indicators.on_balance_volume(data_slice_iter['close'], data_slice_iter['volume'], symbol=f"{symbol}_iter_slice_{i}")
-                    if obv_series_slice is not None and not obv_series_slice.empty:
-                        obv_value_iter = obv_series_slice.iloc[-1] # Nimm den letzten Wert des Slices
-                        df_with_iter_ema.loc[current_ts_iter, 'obv_iter'] = obv_value_iter
-                        if i % 100 == 0: # Gelegentliches Logging
-                             logger_proc_obs.debug(f"OBV Iter {i} @ {current_ts_iter}: Slice [{start_slice_iloc_iter}:{end_slice_iloc_iter}], Length={len(data_slice_iter)}, OBV={obv_value_iter:.2f}")
-                    else:
-                         logger_proc_obs.warning(f"OBV Iter {i} @ {current_ts_iter}: on_balance_volume returned empty Series. Setting NaN.")
-                         df_with_iter_ema.loc[current_ts_iter, 'obv_iter'] = np.nan # Fallback falls leer
-                else:
-                     logger_proc_obs.warning(f"OBV Iter {i} @ {current_ts_iter}: Slice contains all NaNs for close or volume. Setting OBV to NaN.")
-                     df_with_iter_ema.loc[current_ts_iter, 'obv_iter'] = np.nan
-
-            except Exception as obv_iter_err:
-                 logger_proc_obs.error(f"Error during single OBV iteration for {current_ts_iter}: {obv_iter_err}", exc_info=True)
-                 df_with_iter_ema.loc[current_ts_iter, 'obv_iter'] = np.nan
-
-        # Berechne den Trend des iterativen OBV NACH der Schleife
-        # Fülle NaNs im OBV vor der Trendberechnung (z.B. mit 0 oder ffill)
-        df_with_iter_ema['obv_iter'] = df_with_iter_ema['obv_iter'].fillna(0) # Oder ffill() ? Entscheiden! 0 ist oft sicherer.
-        df_with_iter_ema['obv_trend_iter'] = np.sign(df_with_iter_ema['obv_iter'].diff().fillna(0)).astype(int)
-        logger_proc_obs.debug(f"Iterative OBV calculation finished. Last value: {df_with_iter_ema['obv_iter'].iloc[-1]:.2f}" if not df_with_iter_ema.empty else "N/A")
-        # --- Ende Iterative OBV Schleife ---
-    else:
-         logger_proc_obs.warning(f"Skipping iterative OBV calculation as no non-warmup index found.")
-         # Stelle sicher, dass die Spalten existieren, auch wenn sie leer sind
-         df_with_iter_ema['obv_iter'] = 0.0
-         df_with_iter_ema['obv_trend_iter'] = 0
-    # --- Ende Schritt 1c ---
+    # --- Schritt 1, 1b, 1c (Indikatorberechnung) SIND ENTFERNT ---
+    # Die Indikatoren (Standard, iterative EMA, iterativer OBV) sind bereits in precalculated_full_df enthalten.
 
     # --- Schritt 1.5: Zeitfilterung ANWENDEN ---
-    # Wende Filter auf den DataFrame an, der JETZT iterative EMAs UND OBV enthält
-    logger_proc_obs.debug(f"Applying trading time filter...")
+    logger_proc_obs.debug(f"Applying trading time filter to precalculated data (shape: {precalculated_full_df.shape})...")
+    df_processed = None # Initialisierung
     try:
-        df_processed = Backtest.filter_historical_candles_by_trading_time(df_with_iter_ema) # Verwende df_with_iter_ema
+        # Wichtig: .copy() verwenden, um den originalen precalculated_full_df nicht zu verändern
+        df_processed = Backtest.filter_historical_candles_by_trading_time(precalculated_full_df.copy())
     except AttributeError:
         logger_proc_obs.error(f"Function 'Backtest.filter_historical_candles_by_trading_time' not found!")
-        df_processed = df_with_iter_ema # Fallback: Keine Filterung
+        df_processed = precalculated_full_df.copy() # Fallback: Keine Filterung, aber Kopie erstellen
     except Exception as e:
         logger_proc_obs.error(f"Error during time filtering: {e}", exc_info=True)
-        df_processed = df_with_iter_ema # Fallback
+        df_processed = precalculated_full_df.copy() # Fallback, aber Kopie erstellen
 
     if df_processed is None or df_processed.empty:
-        logger_proc_obs.warning(f"DataFrame empty after applying trading time filter. Saving original indicators DataFrame (with iter values).")
-        # Gib den DF mit allen Indikatoren (Standard + Iterativ) zurück, falls keine Kerzen im Handelsfenster
-        return df_with_iter_ema, [], {} # Gib den nicht-gefilterten zurück
+        logger_proc_obs.warning(f"DataFrame empty after applying trading time filter for period. No trades possible in this window.")
+        # Gib den *ursprünglichen* precalculated_full_df zurück, da nach Filterung keine Daten mehr für diese Periode übrig sind.
+        # Dieser DF könnte für das Speichern der Gesamtstrategiedaten noch relevant sein.
+        return precalculated_full_df, [], {}
+
     logger_proc_obs.debug(f"Trading time filter applied. Shape after filter: {df_processed.shape}")
-    df_processed = df_processed.copy() # Sicherstellen, dass wir mit einer Kopie arbeiten
+    # Sicherstellen, dass wir mit einer Kopie arbeiten, falls filter_historical_candles_by_trading_time
+    # unter bestimmten Umständen das Original zurückgibt (sollte nicht, aber zur Sicherheit).
+    # Wenn oben .copy() verwendet wurde, ist dies redundant, schadet aber nicht.
+    df_processed = df_processed.copy()
 
     # --- Schritt 2: Kontext-Flags setzen ---
     logger_proc_obs.debug(f"Setting context flags based on period: {observation_start_time} -> {observation_end_time}")
     try:
-        # Stelle Zeitzone sicher (wichtig für Vergleiche)
         if not isinstance(df_processed.index, pd.DatetimeIndex):
              logger_proc_obs.error("Index is not DatetimeIndex after filtering. Cannot set context flags reliably.")
-             return df_processed, [], {}
+             return df_processed, [], {} # df_processed ist hier der zeitgefilterte DataFrame
         if df_processed.index.tz is None: df_processed.index = df_processed.index.tz_localize('UTC')
         elif str(df_processed.index.tz) != 'UTC': df_processed.index = df_processed.index.tz_convert('UTC')
     except Exception as tz_err:
          logger_proc_obs.error(f"Error ensuring index timezone awareness before flag setting: {tz_err}", exc_info=True)
          return df_processed, [], {}
 
-    # Setze Flags basierend auf dem übergebenen 'period' dict
     df_processed['is_context'] = df_processed.index < observation_start_time
     df_processed['is_observation'] = (df_processed.index >= observation_start_time) & (df_processed.index <= observation_end_time)
     df_processed['is_post_observation'] = df_processed.index > observation_end_time
-    # Korrektur: is_context sollte False sein, wenn is_observation oder is_post_observation True ist
     df_processed.loc[df_processed['is_observation'] | df_processed['is_post_observation'], 'is_context'] = False
     logger_proc_obs.info(f"Flags set: Context={df_processed['is_context'].sum()}, Obs={df_processed['is_observation'].sum()}, PostObs={df_processed['is_post_observation'].sum()}")
 
     # --- Schritt 3: Base Strategy anwenden (Signalgenerierung) ---
-    # Diese Funktion muss jetzt die *_iter Spalten verwenden! (OBV Anpassung ist dort nötig)
-    logger_proc_obs.debug(f"Calling apply_base_strategy (should use iterative EMAs and OBV)...")
+    logger_proc_obs.debug(f"Calling apply_base_strategy (uses precalculated iterative EMAs and OBV)...")
+    df_with_signals = None # Initialisierung
     try:
+        # apply_base_strategy muss die Spaltennamen der iterativen Indikatoren kennen (z.B. ema_fast_iter, obv_iter)
         df_with_signals = backtest_strategy.apply_base_strategy(df_processed, symbol, use_ut_bot=use_ut_bot)
     except AttributeError:
         logger_proc_obs.critical(f"Function 'backtest_strategy.apply_base_strategy' not found!")
-        return df_processed, [], {} # Gib zumindest den DF mit Flags zurück
+        return df_processed, [], {}
     except Exception as e:
         logger_proc_obs.error(f"Error during apply_base_strategy: {e}", exc_info=True)
         return df_processed, [], {}
 
     if df_with_signals is None:
         logger_proc_obs.error(f"apply_base_strategy returned None.")
-        return df_processed, [], {} # Gib zumindest den DF mit Flags zurück
-    logger_proc_obs.debug(f"apply_base_strategy finished. Signal counts:\n{df_with_signals['signal'].value_counts()}")
+        return df_processed, [], {}
+    logger_proc_obs.debug(f"apply_base_strategy finished. Signal counts in df_with_signals:\n{df_with_signals['signal'].value_counts(dropna=False)}")
 
     # --- Schritt 4: Signale außerhalb der Observation zurücksetzen ---
-    # (Dies ist wichtig, damit Trades nur im Beobachtungszeitraum oder Post-Obs (wenn close_position=False) ausgelöst werden)
     logger_proc_obs.debug(f"Resetting signals outside 'is_observation' (and 'is_post_observation' if close_position=True)...")
     close_position_setting_signals = getattr(Z_config, 'close_position', False)
     if 'is_observation' in df_with_signals.columns and 'is_post_observation' in df_with_signals.columns:
          if close_position_setting_signals:
-             # Wenn Positionen am Ende der Obs geschlossen werden, ignoriere Post-Obs Signale
              reset_mask = ~df_with_signals['is_observation']
              logger_proc_obs.debug("close_position=True: Resetting signals where is_observation=False.")
          else:
-             # Wenn Positionen offen bleiben können, erlaube Signale auch in Post-Obs
              reset_mask = ~(df_with_signals['is_observation'] | df_with_signals['is_post_observation'])
              logger_proc_obs.debug("close_position=False: Resetting signals where neither is_observation nor is_post_observation is True.")
 
          df_with_signals.loc[reset_mask, 'signal'] = 'no_signal'
          df_with_signals.loc[reset_mask, 'trigger'] = None
     else:
-        logger_proc_obs.warning(f"'is_observation'/'is_post_observation' columns not found after apply_base_strategy. Cannot reset signals based on period.")
+        logger_proc_obs.warning(f"'is_observation'/'is_post_observation' columns not found in df_with_signals. Cannot reset signals based on period.")
 
     # --- Schritt 5: Verify Indicators (Optional) ---
     try:
-        # Stelle sicher, dass verify_observation_indicators existiert
         verify_observation_indicators(df_with_signals, observation_start_time, symbol)
     except NameError:
         logger_proc_obs.debug(f"verify_observation_indicators not available.")
     except Exception as verif_err:
         logger_proc_obs.error(f"Error during verify_observation_indicators: {verif_err}", exc_info=True)
 
-
     # --- Schritt 6: Relevanten DataFrame für Trade Processing extrahieren ---
     logger_proc_obs.debug(f"Extracting DataFrame slice for trade processing...")
     close_position_setting_trades = getattr(Z_config, 'close_position', False)
-    observation_df_for_trades = pd.DataFrame() # Initialisiere leer
+    observation_df_for_trades = pd.DataFrame()
 
     has_obs_flags_trades = 'is_observation' in df_with_signals.columns and 'is_post_observation' in df_with_signals.columns
 
     if has_obs_flags_trades:
         if close_position_setting_trades:
-            # Nur Observation verwenden, wenn Positionen am Ende geschlossen werden
             observation_df_for_trades = df_with_signals[df_with_signals['is_observation'] == True].copy()
             logger_proc_obs.info(f"close_position=True: Using {len(observation_df_for_trades)} observation candles for trade processing.")
         else:
-            # Observation UND Post-Observation verwenden, wenn Positionen offen bleiben können
             trade_processing_mask = (df_with_signals['is_observation'] == True) | (df_with_signals['is_post_observation'] == True)
             observation_df_for_trades = df_with_signals[trade_processing_mask].copy()
             obs_count = (observation_df_for_trades['is_observation'] == True).sum()
             post_obs_count = (observation_df_for_trades['is_post_observation'] == True).sum()
             logger_proc_obs.info(f"close_position=False: Using {len(observation_df_for_trades)} candles ({obs_count} Obs + {post_obs_count} Post-Obs) for trade processing.")
     else:
-        # Fallback, wenn Flags fehlen (sollte nicht passieren, aber sicherheitshalber)
-        logger_proc_obs.warning(f"Observation flags missing, using entire df_with_signals for trade processing.")
+        logger_proc_obs.warning(f"Observation flags missing in df_with_signals, using entire df_with_signals for trade processing.")
         observation_df_for_trades = df_with_signals.copy()
 
-    # Prüfung auf leeren DataFrame für Trades
     if observation_df_for_trades.empty:
-        logger_proc_obs.warning(f"observation_df_for_trades is empty after filtering. No trades possible.")
-        # Gib den DataFrame mit Signalen zurück, aber keine Trades/Performance
+        logger_proc_obs.warning(f"observation_df_for_trades is empty after filtering for this period. No trades possible.")
         return df_with_signals, [], {}
 
     # --- Schritt 7: Trend Strength Check ---
     logger_proc_obs.debug(f"Starting Trend Strength Check...")
-    # Verwende den DataFrame, der für das Trade Processing bestimmt ist
-    trend_strength_check_df = observation_df_for_trades[observation_df_for_trades.get('is_complete', True)].copy() # Prüfe nur auf kompletten Kerzen
+    trend_strength_check_df = observation_df_for_trades[observation_df_for_trades.get('is_complete', True)].copy()
 
     meets_strength_criteria = False
     strongest_trend_value = 0.0
@@ -459,21 +323,23 @@ def process_observation_period_with_full_data(
     strongest_trend_time = None
     min_trend_strength_cfg = getattr(Z_config, 'min_trend_strength_parameter', 1.0)
 
-    # Verwende ITERATIVE EMA-Werte für den Check, falls verfügbar
     trend_strength_col = 'trend_strength_iter' if 'trend_strength_iter' in trend_strength_check_df.columns else 'trend_strength'
     trend_col = 'trend_iter' if 'trend_iter' in trend_strength_check_df.columns else 'trend'
 
     if not trend_strength_check_df.empty and trend_strength_col in trend_strength_check_df.columns and trend_col in trend_strength_check_df.columns:
         logger_proc_obs.debug(f"Checking trend strength in {len(trend_strength_check_df)} complete trade processing candles (using {trend_strength_col})...")
-        # Finde den stärksten Trend im relevanten Zeitraum
-        strongest_trend_idx = trend_strength_check_df[trend_strength_col].abs().idxmax() # Finde Index der max. absoluten Stärke
-        if pd.notna(strongest_trend_idx):
-            strongest_candle = trend_strength_check_df.loc[strongest_trend_idx]
-            strongest_trend_value = float(strongest_candle.get(trend_strength_col, 0.0))
-            strongest_trend_direction = int(strongest_candle.get(trend_col, 0))
-            strongest_trend_time = strongest_trend_idx
-            # Prüfe, ob IRGENDEINE Kerze das Kriterium erfüllt
-            meets_strength_criteria = (trend_strength_check_df[trend_strength_col].abs() >= min_trend_strength_cfg).any()
+        # idxmax() kann fehlschlagen, wenn die Spalte nur NaNs enthält
+        if trend_strength_check_df[trend_strength_col].notna().any():
+            strongest_trend_idx = trend_strength_check_df[trend_strength_col].abs().idxmax()
+            if pd.notna(strongest_trend_idx):
+                strongest_candle = trend_strength_check_df.loc[strongest_trend_idx]
+                strongest_trend_value = float(strongest_candle.get(trend_strength_col, 0.0))
+                strongest_trend_direction = int(strongest_candle.get(trend_col, 0))
+                strongest_trend_time = strongest_trend_idx
+                meets_strength_criteria = (trend_strength_check_df[trend_strength_col].abs() >= min_trend_strength_cfg).any()
+        else:
+            logger_proc_obs.warning(f"Trend strength column '{trend_strength_col}' contains all NaNs. Cannot determine strongest trend.")
+
 
         if meets_strength_criteria:
             logger_proc_obs.info(f"✓ Trend strength criterion met somewhere in period. Strongest observed: {strongest_trend_value:.1f}% (Dir: {strongest_trend_direction}) @ {strongest_trend_time}")
@@ -482,44 +348,40 @@ def process_observation_period_with_full_data(
     else:
         logger_proc_obs.warning(f"No complete candles or required columns ({trend_strength_col}, {trend_col}) for trend strength check in trade processing data.")
 
-    # --- Behandlung offener Positionen ---
     is_tracking_open_position = position_tracking.get(symbol, {}).get('position_open', False)
     if is_tracking_open_position:
         logger_proc_obs.info(f"ℹ️ Skipping trend strength requirement check as open position is tracked.")
-        meets_strength_criteria = True # Überschreibt den Check
+        meets_strength_criteria = True
         if strongest_trend_time is None and not observation_df_for_trades.empty:
-            strongest_trend_time = observation_df_for_trades.index[0] # Fallback auf Start des Trade-Zeitraums
+            strongest_trend_time = observation_df_for_trades.index[0]
 
-    # --- Abbruchbedingung ---
     if not meets_strength_criteria:
         logger_proc_obs.info(f"Skipping trade processing: Unmet trend strength and no open position tracked.")
-        # Gib den finalen DF mit allen Indikatoren/Signalen zurück, aber keine Trades
         return df_with_signals, [], {}
 
     # --- Schritt 8: Trade Processing Call ---
     symbol_data_for_process = {
         'symbol': symbol,
-        # Übergib hier ggf. relevante Daten, die process_symbol braucht
-        # 'trend_strength': strongest_trend_value, # Optional, wenn process_symbol es braucht
-        # 'trend_direction': strongest_trend_direction, # Optional
-        'current_time': strongest_trend_time if strongest_trend_time else observation_start_time # Zeit des stärksten Trends oder Start
+        'current_time': strongest_trend_time if strongest_trend_time else observation_start_time
     }
     logger_proc_obs.info(f"Calling process_symbol with {len(observation_df_for_trades)} relevant candles...")
+    result = None # Initialisierung
     try:
-        # Übergib den DataFrame, der für Trades gefiltert wurde UND alle Indikatoren enthält
         result = backtest_strategy.process_symbol(
-            symbol=symbol,
-            df=observation_df_for_trades, # Der gefilterte Slice für die Trade-Logik
-            symbol_data=symbol_data_for_process,
-            start_time=observation_start_time, # Start der ursprünglichen Beobachtung
-            position_tracking=position_tracking # Zustand übergeben
-        )
+        symbol=symbol,
+        df=observation_df_for_trades,
+        symbol_data=symbol_data_for_process,
+        start_time=observation_start_time,
+        position_tracking=position_tracking,
+        active_observation_periods_dict=active_observation_periods, # HINZUGEFÜGT
+        observed_symbols_dict=observed_symbols                      # HINZUGEFÜGT
+    )
     except AttributeError:
         logger_proc_obs.critical(f"Function 'backtest_strategy.process_symbol' not found!")
-        return df_with_signals, [], {} # Gib den DF mit Signalen zurück
+        return df_with_signals, [], {}
     except Exception as e:
         logger_proc_obs.error(f"Error calling process_symbol: {e}", exc_info=True)
-        return df_with_signals, [], {} # Gib den DF mit Signalen zurück
+        return df_with_signals, [], {}
 
     # --- Schritt 9: Ergebnisse verarbeiten und State Update ---
     trades = []
@@ -527,62 +389,73 @@ def process_observation_period_with_full_data(
     if result and isinstance(result, tuple) and len(result) == 2:
         trades, performance = result
         logger_proc_obs.info(f"process_symbol resulted in {len(trades)} trade events.")
-        # Stelle sicher, dass 'symbol' im Performance-Dict ist
         if isinstance(performance, dict) and 'symbol' not in performance:
             performance['symbol'] = symbol
     else:
         logger_proc_obs.error(f"✗ process_symbol returned invalid results! Type: {type(result)}")
-        # Erzeuge leere Performance, falls None zurückgegeben wurde oder Format falsch ist
         performance = {'symbol': symbol, 'total_trades': 0, 'error': 'process_symbol returned invalid result'}
 
-    # --- State Update Logik (bleibt wie zuvor) ---
     logger_proc_obs.debug(f"Starting post-processing state update...")
     try:
         position_still_open_after = position_tracking.get(symbol, {}).get('position_open', False)
 
-        if symbol not in active_observation_periods:
-             active_observation_periods[symbol] = {'active_period': None, 'has_position': False}
+        if symbol not in active_observation_periods: # active_observation_periods ist hier der übergebene Parameter
+            active_observation_periods[symbol] = {'active_period': None, 'has_position': False}
+
+        current_pos_type = None # Hole den Positionstyp, falls vorhanden
+        if position_still_open_after and position_tracking.get(symbol, {}).get('position_data'):
+            current_pos_type = position_tracking[symbol]['position_data'].get('position_type')
+
 
         if position_still_open_after:
-            logger_proc_obs.info(f"⚠️ Position remains OPEN. Updating active_observation_periods.")
+            logger_proc_obs.info(f"⚠️ Position remains OPEN for {symbol}. Updating active_observation_periods.")
             active_observation_periods[symbol]['has_position'] = True
-            # Setze aktive Periode nur, wenn sie noch nicht gesetzt ist oder wenn sie für die offene Pos relevant ist
             if not active_observation_periods[symbol].get('active_period'):
-                 active_observation_periods[symbol]['active_period'] = period # Verwende das Original 'period' dict
-                 logger_proc_obs.info(f"Setting active_period for open position.")
-            # Debugging für close_position=False vs True bleibt wie in deinem Originalcode
-            close_position_setting_state = getattr(Z_config, 'close_position', False)
-            if not close_position_setting_state:
-                if position_tracking.get(symbol, {}).get('observation_ended') == True:
-                     logger_proc_obs.info(f"    observation_ended=True confirmed in position_tracking.")
-                else:
-                     logger_proc_obs.debug(f"    observation_ended is False/None in position_tracking for OPEN position ({symbol}) - Expected if opened within period and close_position=False.")
-            elif close_position_setting_state:
-                 logger_proc_obs.error(f"CRITICAL INCONSISTENCY: Position open, but close_position=True! Check timeout logic in process_symbol.")
+                active_observation_periods[symbol]['active_period'] = period # 'period' ist die aktuelle Periode dieser Funktion
+                logger_proc_obs.info(f"Setting active_period for open position: {period.get('start_time')} to {period.get('end_time')}")
+            # ... restliche Logik für offene Positionen ...
+            try:
+                # HIER DIE ANPASSUNG: Dictionaries übergeben
+                update_symbol_position_status(
+                    symbol,
+                    True, # has_position
+                    active_observation_periods, # das übergebene dict
+                    observed_symbols,           # das übergebene dict
+                    position_type=current_pos_type
+                )
+                logger_proc_obs.info(f"Notified symbol_filter: Status updated to 'position open'.")
+            except NameError: logger_proc_obs.debug("update_symbol_position_status not imported/available.")
+            except Exception as e_usps: logger_proc_obs.error(f"Error calling update_symbol_position_status for open pos: {e_usps}")
 
-        else: # Position ist geschlossen
-            logger_proc_obs.info(f"✓ Position is CLOSED. Updating active_observation_periods.")
+        else: # Position is CLOSED
+            logger_proc_obs.info(f"✓ Position is CLOSED for {symbol}. Updating active_observation_periods.")
             active_observation_periods[symbol]['has_position'] = False
-            active_observation_periods[symbol]['active_period'] = None # Keine aktive Periode mehr zugeordnet
+            # Wenn die Periode die aktuelle war, und die Position geschlossen wurde, kann die Periode auch weg
+            if active_observation_periods[symbol].get('active_period') == period:
+                 active_observation_periods[symbol]['active_period'] = None
+                 logger_proc_obs.info(f"Active period for {symbol} cleared as position closed within it.")
 
             if position_tracking.get(symbol, {}).get('position_open'):
-                 logger_proc_obs.error(f"CRITICAL INCONSISTENCY: Position closed, but position_tracking still shows open for {symbol}! Resetting global state manually.")
-                 position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
-
+                logger_proc_obs.error(f"CRITICAL INCONSISTENCY: Position closed, but position_tracking still shows open for {symbol}! Resetting global state manually.")
+                position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
             try:
-                update_symbol_position_status(symbol, False)
+                # HIER DIE ANPASSUNG: Dictionaries übergeben
+                update_symbol_position_status(
+                    symbol,
+                    False, # has_position
+                    active_observation_periods, # das übergebene dict
+                    observed_symbols,           # das übergebene dict
+                    position_type=None # Kein Typ, da keine Position
+                )
                 logger_proc_obs.info(f"Notified symbol_filter: Status updated to 'no position'.")
             except NameError: logger_proc_obs.debug("update_symbol_position_status not imported/available.")
-            except Exception as e_usps: logger_proc_obs.error(f"Error calling update_symbol_position_status: {e_usps}")
-
+            except Exception as e_usps: logger_proc_obs.error(f"Error calling update_symbol_position_status for closed pos: {e_usps}")
     except Exception as post_process_err:
         logger_proc_obs.error(f"Error during post-processing state update: {post_process_err}", exc_info=True)
     logger_proc_obs.debug(f"Post-processing state update finished.")
-    # --- Ende State Update ---
 
     # --- Schritt 10: Rückgabe ---
-    # Gib den DataFrame zurück, der ALLES enthält (Rohdaten, alle Indikatoren [Std+Iter], Flags, Signale)
-    # df_with_signals enthält bereits alle iterativen Werte.
+    # df_with_signals ist der (zeitgefilterte) DataFrame mit allen vorab berechneten Indikatoren, Flags und Signalen.
     logger_proc_obs.info(f"Finished processing period. Returning DataFrame (shape {df_with_signals.shape}) and results.")
     return df_with_signals, trades, performance
 
@@ -880,59 +753,146 @@ def process_symbol_parallel(symbol, current_time, position_tracking, active_obse
     # --- Initial Checks ---
     if None in [position_tracking, active_observation_periods, observed_symbols]:
         logging.error(f"CRITICAL ({symbol}): One or more tracking dictionaries are None in process_symbol_parallel!")
-        return None
+        # Im Fehlerfall ein Tupel zurückgeben, das dem erwarteten Format entspricht, um Abstürze in der aufrufenden Schleife zu vermeiden
+        return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': 'Tracking dictionary None'}, False
+        
     if not isinstance(current_time, datetime) or current_time.tzinfo is None:
         logging.error(f"CRITICAL ({symbol}): current_time is not a timezone-aware datetime object!")
         if isinstance(current_time, datetime) and current_time.tzinfo is None:
             current_time = current_time.replace(tzinfo=timezone.utc)
         else:
-            return None
+            return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': 'Invalid current_time'}, False
+
+    # Erstelle einen spezifischen Logger für diese Funktion und dieses Symbol
+    logger_psp = logging.getLogger(f"process_symbol_parallel.{symbol}")
 
     try:
-        # --- Imports ---
+        # --- Imports innerhalb der Funktion (um Kapselung zu gewährleisten, falls als eigenständige Einheit betrachtet) ---
+        # In einer typischen Struktur wären diese eher auf Modulebene.
         from datetime import timedelta
         import Z_config
-        # Importiere Backtest-Strategie Funktionen und andere Helfer
-        # Stelle sicher, dass diese Pfade korrekt sind!
         import utils.backtest_strategy as backtest_strategy
-        from utils.Backtest import check_rate_limit, parse_interval_to_minutes, save_strategy_data # save_strategy_data hier importieren
-        from utils.symbol_filter import check_price_change_threshold, verify_observation_indicators, update_symbol_position_status
-        # Importiere die spezifische Funktion für Beobachtungsperioden
+        from utils.Backtest import check_rate_limit, parse_interval_to_minutes, save_strategy_data
+        from utils.symbol_filter import check_price_change_threshold # verify_observation_indicators, update_symbol_position_status (falls hier direkt genutzt)
         from utils.parallel_processing import process_observation_period_with_full_data
+        from utils import indicators # Für die einmalige Indikatorberechnung
 
         # --- Start Processing ---
-        logging.info(f"\n{'-'*15} Starting processing for: {symbol} {'-'*15}")
+        logger_psp.info(f"\n{'-'*15} Starting processing for: {symbol} {'-'*15}")
 
         # --- Check for Existing Open Position ---
-        has_open_position = False
+        has_open_position_initial = False
         if symbol in position_tracking and position_tracking[symbol].get('position_open', False):
-            has_open_position = True
-            logging.info(f"[{symbol}] Found existing open position from passed state.")
+            has_open_position_initial = True
+            logger_psp.info(f"Found existing open position from passed state.")
             pos_data_debug = position_tracking[symbol].get('position_data', {})
-            logging.debug(f"  Details: Entry={pos_data_debug.get('entry_time','?')}, Type={pos_data_debug.get('position_type','?')}, Qty={pos_data_debug.get('remaining_quantity','?')}")
+            logger_psp.debug(f"  Details: Entry={pos_data_debug.get('entry_time','?')}, Type={pos_data_debug.get('position_type','?')}, Qty={pos_data_debug.get('remaining_quantity','?')}")
 
         # --- Fetch Data ---
-        check_rate_limit(weight=1) # Rate limit check
-        logging.debug(f"[{symbol}] Calling get_multi_timeframe_data...")
-        # Verwende die Funktion aus dem backtest_strategy Modul
-        overall_lookback_hours = getattr(Z_config, 'lookback_hours_parameter', 24*7) # Dein globaler Lookback
+        check_rate_limit(weight=1)
+        logger_psp.debug(f"Calling get_multi_timeframe_data...")
+        overall_lookback_hours = getattr(Z_config, 'lookback_hours_parameter', 24*7)
         logical_start_time = current_time - timedelta(hours=overall_lookback_hours)
 
-        # 2. Rufe die *neue* get_multi_timeframe_data mit der korrekten Signatur auf
-        logging.debug(f"[{symbol}] Calling get_multi_timeframe_data with logical start: {logical_start_time}, end: {current_time}")
+        logger_psp.debug(f"Calling get_multi_timeframe_data with logical start: {logical_start_time}, end: {current_time}")
         full_df = backtest_strategy.get_multi_timeframe_data(
             symbol=symbol,
-            end_time=current_time,             # Das logische Ende des Backtest-Zeitraums
-            initial_start_time=logical_start_time, # Der logische Beginn des Backtest-Zeitraums
-            position_tracking=position_tracking  # Das Tracking-Dictionary übergeben
-            # KEIN lookback_hours Argument mehr hier!
+            end_time=current_time,
+            initial_start_time=logical_start_time,
+            position_tracking=position_tracking
         )
 
         if full_df is None or full_df.empty:
-            logging.warning(f"[{symbol}] No data returned from get_multi_timeframe_data.")
-            return None # Kein None zurückgeben, sondern Standard-Performance für das Symbol
+            logger_psp.warning(f"No data returned from get_multi_timeframe_data.")
+            return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': 'No base data from get_multi_timeframe_data'}, False
 
-        # --- Konfigurationsparameter holen ---
+        # --- BEGINN EINMALIGE INDIKATORBERECHNUNG ---
+        df_with_all_indicators = None
+        logger_psp.info(f"Starting ONE-TIME full indicator calculation for the entire dataset (Shape: {full_df.shape})...")
+        try:
+            # 1. Standard Indikatoren (OHNE iterative EMA/OBV, falls die separat kommen)
+            logger_psp.debug(f"Calculating standard indicators (one-time)...")
+            # Annahme: calculate_indicators berechnet KEINE iterativen EMAs/OBV, wenn calculate_for_alignment_only=False
+            # oder eine andere Logik stellt dies sicher.
+            df_std_ind_once = indicators.calculate_indicators(full_df.copy(), calculate_for_alignment_only=False)
+            if df_std_ind_once is None:
+                raise ValueError("Standard indicator calculation (once) returned None.")
+            logger_psp.debug(f"Standard indicators calculated. Shape: {df_std_ind_once.shape}")
+
+            # 2. Iterative EMAs (einmalig auf dem gesamten Datensatz)
+            logger_psp.debug(f"Calculating iterative EMAs (one-time)...")
+            required_candles_ema_once = backtest_strategy.calculate_required_candles()
+            df_iter_ema_once = indicators.calculate_ema_iterative(df_std_ind_once, required_candles_ema_once)
+            if df_iter_ema_once is None:
+                raise ValueError("Iterative EMA calculation (once) returned None.")
+            logger_psp.debug(f"Iterative EMAs calculated. Shape: {df_iter_ema_once.shape}")
+
+            # 3. Iterative OBV (einmalig auf dem gesamten Datensatz)
+            logger_psp.debug(f"Calculating iterative OBV (one-time)...")
+            # Initialisiere Spalten im DataFrame, der bereits iterative EMAs enthält
+            df_with_obv_calc = df_iter_ema_once.copy() # Arbeite mit einer Kopie für die OBV-Berechnung
+            df_with_obv_calc['obv_iter'] = np.nan
+            df_with_obv_calc['obv_trend_iter'] = 0
+
+            non_warmup_indices_obv_once = df_with_obv_calc[~df_with_obv_calc['is_warmup']].index
+            first_backtest_iloc_obv_once = -1
+            if not non_warmup_indices_obv_once.empty:
+                try:
+                    first_backtest_iloc_obv_once = df_with_obv_calc.index.get_loc(non_warmup_indices_obv_once[0])
+                except KeyError:
+                    logger_psp.error(f"Could not find first non-warmup index for one-time iterative OBV.")
+
+            if first_backtest_iloc_obv_once != -1:
+                required_candles_obv_once = backtest_strategy.calculate_required_candles()
+                if required_candles_obv_once <= 0:
+                    logger_psp.warning(f"calculate_required_candles for OBV returned {required_candles_obv_once}. Using fallback 100.")
+                    required_candles_obv_once = 100
+
+                logger_psp.info(f"Starting one-time iterative OBV loop from index {first_backtest_iloc_obv_once} using {required_candles_obv_once} required candles.")
+                # Iterative OBV Schleife (EINMALIGER DURCHLAUF)
+                for i_once in tqdm(range(first_backtest_iloc_obv_once, len(df_with_obv_calc)), desc=f"[{symbol}] One-Time OBV Iter", unit="c", leave=False, mininterval=10.0, ncols=80):
+                    current_ts_iter_once = df_with_obv_calc.index[i_once]
+                    start_slice_iloc_iter_once = max(0, i_once - required_candles_obv_once + 1)
+                    end_slice_iloc_iter_once = i_once + 1
+
+                    if end_slice_iloc_iter_once - start_slice_iloc_iter_once < 2: # Benötigt min. 2 Punkte für diff() in on_balance_volume
+                        df_with_obv_calc.loc[current_ts_iter_once, 'obv_iter'] = 0.0 # Oder np.nan, je nach gewünschtem Startverhalten
+                        continue
+
+                    data_slice_iter_once = df_with_obv_calc.iloc[start_slice_iloc_iter_once:end_slice_iloc_iter_once]
+
+                    if data_slice_iter_once['close'].notna().any() and data_slice_iter_once['volume'].notna().any():
+                        # Annahme: indicators.on_balance_volume kann mit einer Series umgehen und gibt eine Series zurück
+                        obv_series_slice_once = indicators.on_balance_volume(data_slice_iter_once['close'], data_slice_iter_once['volume'], symbol=f"{symbol}_onetime_slice_{i_once}")
+                        if obv_series_slice_once is not None and not obv_series_slice_once.empty:
+                            df_with_obv_calc.loc[current_ts_iter_once, 'obv_iter'] = obv_series_slice_once.iloc[-1]
+                        else:
+                            df_with_obv_calc.loc[current_ts_iter_once, 'obv_iter'] = np.nan
+                    else:
+                        df_with_obv_calc.loc[current_ts_iter_once, 'obv_iter'] = np.nan
+                
+                df_with_obv_calc['obv_iter'] = df_with_obv_calc['obv_iter'].fillna(0) # Oder eine andere geeignete Füllmethode
+                df_with_obv_calc['obv_trend_iter'] = np.sign(df_with_obv_calc['obv_iter'].diff().fillna(0)).astype(int)
+                logger_psp.debug(f"One-time iterative OBV calculation finished.")
+            else:
+                logger_psp.warning(f"Skipping one-time iterative OBV as no non-warmup index found. OBV columns will be default.")
+                df_with_obv_calc['obv_iter'] = 0.0 # Default-Werte sicherstellen
+                df_with_obv_calc['obv_trend_iter'] = 0
+            
+            df_with_all_indicators = df_with_obv_calc # Dies ist der DataFrame mit allen Indikatoren
+
+        except Exception as e_one_time_calc:
+            logger_psp.error(f"CRITICAL ERROR during ONE-TIME full indicator calculation: {e_one_time_calc}", exc_info=True)
+            return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': f'One-time indicator calc failed: {e_one_time_calc}'}, False
+        
+        if df_with_all_indicators is None: # Zusätzlicher Check
+             logger_psp.error(f"CRITICAL: df_with_all_indicators is None after one-time calculation block for {symbol}.")
+             return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': 'df_with_all_indicators is None'}, False
+
+        logger_psp.info(f"ONE-TIME full indicator calculation completed. Final DF shape: {df_with_all_indicators.shape}")
+        # --- ENDE EINMALIGE INDIKATORBERECHNUNG ---
+
+        # --- Konfigurationsparameter holen (bleibt gleich) ---
         filtering_active = getattr(Z_config, 'filtering_active', True)
         beobachten_active = getattr(Z_config, 'beobachten_active', True)
         observation_hours = getattr(Z_config, 'symbol_observation_hours', 48)
@@ -941,32 +901,40 @@ def process_symbol_parallel(symbol, current_time, position_tracking, active_obse
         lookback_minutes = getattr(Z_config, 'price_change_lookback_minutes', 60*12)
         direction = getattr(Z_config, 'seite', 'both')
         close_position_setting = getattr(Z_config, 'close_position', False)
-        use_ut_bot_setting = getattr(Z_config, 'ut_bot', False)
+        use_ut_bot_setting = getattr(Z_config, 'ut_bot', False) # Annahme: ut_bot ist ein boolscher Schalter
 
         # --- Initialisierung für Ergebnisse ---
         all_trades_for_symbol = []
         final_performance = {}
-        last_processed_df = None # DataFrame zum Speichern
+        last_processed_df_for_saving = None # DataFrame zum Speichern am Ende
 
-        # --- Daten filtern und vorbereiten ---
-        full_df = full_df[full_df.index <= current_time] # Ensure data doesn't exceed current time
-        complete_candles = full_df[full_df.get('is_complete', True)]
-        if complete_candles.empty:
-            logging.warning(f"[{symbol}] No complete candles found in the fetched data.")
-            # Return mit leerer Performance, damit das Symbol gezählt wird
-            return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': 'No complete candles'}, False
+        # --- Daten filtern und vorbereiten (auf Basis des ursprünglichen full_df für die Periodenfindung) ---
+        # Die Indikatoren sind jetzt in df_with_all_indicators. Die Periodenfindung basiert weiterhin auf Rohpreisen.
+        temp_full_df_for_period_finding = full_df[full_df.index <= current_time]
+        complete_candles_for_period_finding = temp_full_df_for_period_finding[temp_full_df_for_period_finding.get('is_complete', True)]
 
-        logging.info(f"[{symbol}] Initial data: {len(full_df)} rows ({full_df.index.min()} to {full_df.index.max()}). Complete candles: {len(complete_candles)}")
+        if complete_candles_for_period_finding.empty:
+            logger_psp.warning(f"No complete candles found in the fetched data for period finding.")
+            # Auch wenn keine Perioden gefunden werden, könnten offene Positionen verarbeitet werden
+            # oder ein Fallback-Processing des gesamten Datensatzes stattfinden.
+            # Das Speichern von df_with_all_indicators könnte immer noch sinnvoll sein.
+            # Wir setzen hier fort und lassen die spätere Logik entscheiden.
+        
+        logger_psp.info(f"Data for period finding: {len(temp_full_df_for_period_finding)} rows. Complete candles: {len(complete_candles_for_period_finding)}")
 
         if symbol not in observed_symbols:
-            observed_symbols[symbol] = []
+            observed_symbols[symbol] = {}
 
         # --- Verarbeitung (Offene Position oder Suche nach Perioden) ---
-        processed_a_period = False # Flag, um zu sehen, ob eine Periode verarbeitet wurde
+        processed_a_period_flag = False
+        # Die Variable has_open_position wurde bereits initial gesetzt (has_open_position_initial)
+        # Wir müssen sie nach der Verarbeitung einer offenen Position ggf. aktualisieren.
+        current_has_open_position = has_open_position_initial
+
 
         # 1. Offene Position verarbeiten
-        if has_open_position:
-            logging.info(f"[{symbol}] Processing existing open position first...")
+        if current_has_open_position:
+            logger_psp.info(f"Processing existing open position first...")
             position_data_global = position_tracking[symbol].get('position_data', {})
             entry_time_global = position_data_global.get('entry_time')
             if entry_time_global and isinstance(entry_time_global, datetime):
@@ -974,179 +942,262 @@ def process_symbol_parallel(symbol, current_time, position_tracking, active_obse
                 else: entry_time_utc = entry_time_global.astimezone(timezone.utc)
 
                 try: from utils.backtest_strategy import calculate_optimal_context_hours; context_hours = calculate_optimal_context_hours()
-                except (ImportError, NameError): context_hours = 24; logging.warning(f"[{symbol}] Using default context {context_hours}h.")
+                except (ImportError, NameError): context_hours = 24; logger_psp.warning(f"Using default context {context_hours}h for open position.")
 
-                processing_start_with_context = max(entry_time_utc - timedelta(hours=context_hours), full_df.index.min())
-                period_for_open_pos = {'start_time': processing_start_with_context, 'entry_time': entry_time_utc, 'end_time': full_df.index.max(), 'price_change_pct': 0}
+                # Der Start der Periode für eine offene Position sollte den Kontext für Indikatoren berücksichtigen.
+                # df_with_all_indicators enthält bereits den vollen Kontext.
+                # Die 'period' definiert den relevanten Ausschnitt für die Trade-Logik.
+                # Der Start der Periode sollte der Entry-Zeitpunkt sein, minus Kontext für die Signale, die zum Entry führten.
+                # Da wir jetzt den *gesamten* df_with_all_indicators haben, ist der "Start" der Periode hier
+                # eher der Beginn des relevanten Ausschnitts für die *Fortführung* der Position.
+                # Der 'start_time' des period-Dictionary für process_observation_period_with_full_data
+                # wird verwendet, um is_context, is_observation zu setzen.
+                # Für eine offene Position ist alles ab Entry 'is_observation' oder 'is_post_observation'.
+                # Der Kontext davor ist bereits in df_with_all_indicators enthalten.
+                
+                # Der Start der "Beobachtung" für die offene Position ist die Entry-Zeit.
+                # Der "Kontext" davor ist bereits im df_with_all_indicators.
+                # Die Endzeit ist das Ende des gesamten Datenframes.
+                period_start_for_open_pos = entry_time_utc # Die Beobachtung beginnt mit dem Entry
+                period_end_for_open_pos = df_with_all_indicators.index.max() # Bis zum Ende der verfügbaren Daten
 
-                logging.info(f"[{symbol}] Calling process_observation_period for open pos (Context Start: {processing_start_with_context}, End: {period_for_open_pos['end_time']})")
-                df_processed, trades_open_pos, perf_open_pos = process_observation_period_with_full_data(
-                    symbol=symbol, full_df_raw=full_df.copy(), period=period_for_open_pos, use_ut_bot=use_ut_bot_setting,
-                    position_tracking=position_tracking, active_observation_periods=active_observation_periods, observed_symbols=observed_symbols
+                period_for_open_pos = {
+                    'start_time': period_start_for_open_pos, # Ab hier ist 'is_observation'
+                    'entry_time': entry_time_utc, # Info für die Funktion
+                    'end_time': period_end_for_open_pos, # Ende der Periode
+                    'price_change_pct': 0 # Nicht relevant für offene Positionen
+                }
+                
+                logger_psp.info(f"Calling process_observation_period for open pos (Period Start: {period_for_open_pos['start_time']}, End: {period_for_open_pos['end_time']})")
+                # Wichtig: precalculated_full_df übergeben!
+                df_processed_open, trades_open_pos, perf_open_pos = process_observation_period_with_full_data(
+                    symbol=symbol,
+                    precalculated_full_df=df_with_all_indicators.copy(), # Die vorab berechneten Daten
+                    period=period_for_open_pos,
+                    use_ut_bot=use_ut_bot_setting,
+                    position_tracking=position_tracking,
+                    active_observation_periods=active_observation_periods,
+                    observed_symbols=observed_symbols
                 )
-                processed_a_period = True # Markieren, dass etwas verarbeitet wurde
-                if df_processed is not None: last_processed_df = df_processed # Speichere den DF zum späteren Sichern
+                processed_a_period_flag = True
+                if df_processed_open is not None: last_processed_df_for_saving = df_processed_open
                 if trades_open_pos: all_trades_for_symbol.extend(trades_open_pos)
                 if perf_open_pos and isinstance(perf_open_pos, dict) and 'error' not in perf_open_pos: final_performance = perf_open_pos
 
-                has_open_position = position_tracking.get(symbol, {}).get('position_open', False) # Status nach Verarbeitung prüfen
-                if not has_open_position: logging.info(f"[{symbol}] Open position was closed during processing.")
+                current_has_open_position = position_tracking.get(symbol, {}).get('position_open', False) # Status aktualisieren
+                if not current_has_open_position: logger_psp.info(f"Open position was closed during processing.")
                 else:
-                    logging.info(f"[{symbol}] Open position remains open after processing.")
-                    if not close_position_setting:
-                        logging.info(f"[{symbol}] Skipping search for new periods (Position open and close_position=False).")
-                        # KEIN return hier, stattdessen weiter zum Speichern gehen
-            else: # Ungültige Entry-Zeit
-                logging.warning(f"[{symbol}] Cannot process open pos: Invalid entry_time. Resetting global state.")
+                    logger_psp.info(f"Open position remains open after processing.")
+                    if not close_position_setting: # Z_config.close_position
+                        logger_psp.info(f"Skipping search for new periods (Position open and close_position=False).")
+                        # Nicht returnen, da df_with_all_indicators noch gespeichert werden soll
+            else:
+                logger_psp.warning(f"Cannot process open pos: Invalid entry_time in global state. Resetting global state.")
                 position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
                 if symbol in active_observation_periods: active_observation_periods[symbol] = {'active_period': None, 'has_position': False}
-                has_open_position = False
+                current_has_open_position = False
 
-        # 2. Neue Perioden suchen (nur wenn keine offene Pos mehr ODER close_position=True)
-        #    ODER wenn Filterung nicht aktiv ist (Fallback)
-        if (not has_open_position or close_position_setting):
+        # 2. Neue Perioden suchen (nur wenn keine offene Pos mehr ODER close_position_setting=True)
+        if not current_has_open_position or close_position_setting:
             if filtering_active and beobachten_active:
-                # ... (Logik zum Finden und Verarbeiten von Beobachtungsperioden, wie zuvor) ...
-                 logging.info(f"[{symbol}] Searching for new observation periods (Price Change Filter Active)...")
-                 interval_minutes = parse_interval_to_minutes(Z_config.interval)
-                 lookback_candles = lookback_minutes // interval_minutes if interval_minutes and interval_minutes > 0 else 0
+                 logger_psp.info(f"Searching for new observation periods (Price Change Filter Active)...")
+                 interval_minutes_cfg = parse_interval_to_minutes(Z_config.interval)
+                 lookback_candles_cfg = lookback_minutes // interval_minutes_cfg if interval_minutes_cfg and interval_minutes_cfg > 0 else 0
 
-                 if lookback_candles <= 0: logging.error(f"[{symbol}] Invalid lookback_candles ({lookback_candles}).")
+                 if lookback_candles_cfg <= 0:
+                     logger_psp.error(f"Invalid lookback_candles ({lookback_candles_cfg}) for period finding.")
                  else:
                      current_observation_end_tracker = None
-                     # Finde alle qualifizierenden Perioden
                      found_periods_data = []
-                     for i in range(lookback_candles, len(complete_candles)):
-                         current_candle_time = complete_candles.index[i]
-                         if current_observation_end_tracker and current_candle_time <= current_observation_end_tracker: continue
-                         start_slice_idx = max(0, i - lookback_candles); lookback_slice = complete_candles.iloc[start_slice_idx : i + 1]
-                         threshold_reached, price_change_pct, _, _ = check_price_change_threshold(
-                             lookback_slice, min_pct, max_pct, lookback_minutes, direction )
+                     # Verwende complete_candles_for_period_finding (basiert auf Roh-full_df)
+                     for i_period in range(lookback_candles_cfg, len(complete_candles_for_period_finding)):
+                         current_candle_time_period = complete_candles_for_period_finding.index[i_period]
+                         if current_observation_end_tracker and current_candle_time_period <= current_observation_end_tracker:
+                             continue
+                         
+                         start_slice_idx_period = max(0, i_period - lookback_candles_cfg)
+                         lookback_slice_period = complete_candles_for_period_finding.iloc[start_slice_idx_period : i_period + 1]
+                         
+                         threshold_reached, price_change_pct_period, _, _ = check_price_change_threshold(
+                             lookback_slice_period, min_pct, max_pct, lookback_minutes, direction
+                         )
                          if threshold_reached:
-                              logging.info(f"[{symbol}] ✓ Price change threshold met @ {current_candle_time}: {price_change_pct:.2f}%")
-                              observation_start = current_candle_time
+                              logger_psp.info(f"✓ Price change threshold met @ {current_candle_time_period}: {price_change_pct_period:.2f}%")
+                              observation_start_period = current_candle_time_period
                               if hasattr(Z_config, 'buy_delay_1_candle_spaeter') and Z_config.buy_delay_1_candle_spaeter:
-                                  delay_minutes = interval_minutes; observation_start += timedelta(minutes=delay_minutes)
-                              observation_end = observation_start + timedelta(hours=observation_hours)
-                              observation_end = min(observation_end, full_df.index.max())
-                              current_observation_end_tracker = observation_end # Verhindere Überlappung im Fund
-                              found_periods_data.append({'start_time': observation_start, 'end_time': observation_end, 'price_change_pct': price_change_pct})
-                     # Verarbeite alle gefundenen Perioden
-                     logging.info(f"[{symbol}] Found {len(found_periods_data)} potential observation periods to process.")
-                     for period_data in found_periods_data:
-                         logging.info(f"[{symbol}] Processing period: {period_data['start_time']} -> {period_data['end_time']}")
-                         df_obs, trades_obs, perf_obs = process_observation_period_with_full_data(
-                        symbol=symbol,
-                        full_df_raw=full_df.copy(), # <<< Argumentname korrigiert
-                        period=period_data,
-                        use_ut_bot=use_ut_bot_setting,
-                        position_tracking=position_tracking,
-                        active_observation_periods=active_observation_periods,
-                        observed_symbols=observed_symbols
-                    )
-                         processed_a_period = True
-                         if df_obs is not None: last_processed_df = df_obs # Überschreibe mit letztem DF
-                         if trades_obs: all_trades_for_symbol.extend(trades_obs)
-                         if perf_obs and isinstance(perf_obs, dict) and 'error' not in perf_obs: final_performance = perf_obs # Nimm letzte Performance
-                         if symbol in observed_symbols: observed_symbols[symbol].append({'start': period_data['start_time'], 'end': period_data['end_time'], 'price_change_pct': period_data['price_change_pct']})
-                         # Prüfe nach jeder Periode, ob Position offen ist und Suche abgebrochen werden soll
-                         position_opened_in_period = position_tracking.get(symbol, {}).get('position_open', False)
-                         if position_opened_in_period and not close_position_setting:
-                             logging.info(f"[{symbol}] Position opened and close_position=False. Stopping processing further periods.")
+                                  delay_minutes_period = interval_minutes_cfg
+                                  observation_start_period += timedelta(minutes=delay_minutes_period)
+                              
+                              observation_end_period = observation_start_period + timedelta(hours=observation_hours)
+                              # Stelle sicher, dass das Ende nicht über die vorhandenen Daten in df_with_all_indicators hinausgeht
+                              observation_end_period = min(observation_end_period, df_with_all_indicators.index.max())
+                              
+                              current_observation_end_tracker = observation_end_period
+                              found_periods_data.append({
+                                  'start_time': observation_start_period,
+                                  'end_time': observation_end_period,
+                                  'price_change_pct': price_change_pct_period
+                              })
+                     
+                     logger_psp.info(f"Found {len(found_periods_data)} potential new observation periods to process.")
+                     for period_data_item in found_periods_data:
+                         logger_psp.info(f"Processing period: {period_data_item['start_time']} -> {period_data_item['end_time']}")
+                         # Wichtig: precalculated_full_df übergeben!
+                         df_obs_new, trades_obs_new, perf_obs_new = process_observation_period_with_full_data(
+                            symbol=symbol,
+                            precalculated_full_df=df_with_all_indicators.copy(), # Die vorab berechneten Daten
+                            period=period_data_item,
+                            use_ut_bot=use_ut_bot_setting,
+                            position_tracking=position_tracking,
+                            active_observation_periods=active_observation_periods,
+                            observed_symbols=observed_symbols
+                         )
+                         processed_a_period_flag = True
+                         if df_obs_new is not None: last_processed_df_for_saving = df_obs_new
+                         if trades_obs_new: all_trades_for_symbol.extend(trades_obs_new)
+                         if perf_obs_new and isinstance(perf_obs_new, dict) and 'error' not in perf_obs_new: final_performance = perf_obs_new
+                         
+                         if symbol in observed_symbols: # Sicherstellen, dass observed_symbols[symbol] eine Liste ist
+                            if not isinstance(observed_symbols[symbol], list): observed_symbols[symbol] = []
+                            observed_symbols[symbol].append({
+                                 'start': period_data_item['start_time'],
+                                 'end': period_data_item['end_time'],
+                                 'price_change_pct': period_data_item['price_change_pct']
+                            })
+
+                         position_opened_in_this_period = position_tracking.get(symbol, {}).get('position_open', False)
+                         if position_opened_in_this_period and not close_position_setting:
+                             logger_psp.info(f"Position opened during period processing and close_position=False. Stopping search for further new periods.")
                              break # Verlasse die Schleife der gefundenen Perioden
-
-            elif not (filtering_active and beobachten_active): # Fallback: Keine Filterung -> Verarbeite Gesamtdaten
-                 logging.info(f"[{symbol}] Filtering/Observation skipped. Processing full dataset...")
-                 period_data = {'start_time': full_df.index.min(), 'end_time': full_df.index.max(), 'price_change_pct': 0}
-                 df_full, trades_full, perf_full = process_observation_period_with_full_data(
-                     symbol=symbol, full_df_raw=full_df.copy(), period=period_data, use_ut_bot=use_ut_bot_setting,
-                     position_tracking=position_tracking, active_observation_periods=active_observation_periods, observed_symbols=observed_symbols )
-                 processed_a_period = True
-                 if df_full is not None: last_processed_df = df_full # Speichere den DF
-                 if trades_full: all_trades_for_symbol.extend(trades_full)
-                 if perf_full and isinstance(perf_full, dict) and 'error' not in perf_full: final_performance = perf_full
-
+            
+            elif not (filtering_active and beobachten_active): # Fallback: Keine Filterung
+                 logger_psp.info(f"Filtering/Observation skipped. Processing full dataset as a single period...")
+                 # Definiere eine Periode, die den gesamten precalculated_full_df abdeckt
+                 # Der "Kontext" ist bereits enthalten. is_observation beginnt mit der ersten Kerze.
+                 period_data_full_fallback = {
+                     'start_time': df_with_all_indicators.index.min(), # Ab hier ist is_observation
+                     'end_time': df_with_all_indicators.index.max(),
+                     'price_change_pct': 0
+                 }
+                 df_full_fallback, trades_full_fallback, perf_full_fallback = process_observation_period_with_full_data(
+                     symbol=symbol,
+                     precalculated_full_df=df_with_all_indicators.copy(),
+                     period=period_data_full_fallback,
+                     use_ut_bot=use_ut_bot_setting,
+                     position_tracking=position_tracking,
+                     active_observation_periods=active_observation_periods,
+                     observed_symbols=observed_symbols
+                 )
+                 processed_a_period_flag = True
+                 if df_full_fallback is not None: last_processed_df_for_saving = df_full_fallback
+                 if trades_full_fallback: all_trades_for_symbol.extend(trades_full_fallback)
+                 if perf_full_fallback and isinstance(perf_full_fallback, dict) and 'error' not in perf_full_fallback: final_performance = perf_full_fallback
 
         # --- Nachbearbeitung & Speichern von full_data.csv ---
-        logging.debug(f"[{symbol}] Checkpoint G: Preparing data for saving.")
-        df_to_save = None
-        data_saved_flag = False # Flag für Rückgabewert
+        logger_psp.debug(f"Preparing data for saving (save_strategy_data call).")
+        df_to_save_final = None
+        data_saved_flag = False
 
-        if last_processed_df is not None and not last_processed_df.empty:
-            df_to_save = last_processed_df
-            logging.debug(f"[{symbol}] Using last processed DataFrame (shape: {df_to_save.shape}) for saving.")
-        elif full_df is not None and not full_df.empty and not processed_a_period:
-            # Fallback: Wenn keine Periode explizit verarbeitet wurde (z.B. nur offene Pos. behalten, aber close_pos=False)
-            # UND wir den full_df haben, dann berechne Signale darauf, um zumindest Indikatoren zu speichern.
-            logging.warning(f"[{symbol}] No specific period processed, applying base strategy to original full_df before saving.")
-            df_to_save = backtest_strategy.apply_base_strategy(full_df.copy(), symbol, use_ut_bot=use_ut_bot_setting)
-        else:
-            logging.error(f"[{symbol}] Cannot save strategy data: No valid DataFrame available at the end.")
+        if last_processed_df_for_saving is not None and not last_processed_df_for_saving.empty:
+            # Dies ist der DataFrame, der aus dem letzten Aufruf von process_observation_period_with_full_data stammt.
+            # Er sollte bereits alle Indikatoren, Flags und Signale für die letzte verarbeitete Periode enthalten.
+            # Für das Speichern des "gesamten" Laufs ist df_with_all_indicators relevanter, wenn keine Periode verarbeitet wurde.
+            df_to_save_final = last_processed_df_for_saving
+            logger_psp.debug(f"Using last_processed_df_for_saving (shape: {df_to_save_final.shape}).")
+        elif df_with_all_indicators is not None and not df_with_all_indicators.empty and not processed_a_period_flag :
+            # Fallback: Wenn keine spezifische Periode verarbeitet wurde, aber wir den df_with_all_indicators haben,
+            # dann berechne Signale darauf, um zumindest den voll indizierten Datensatz zu speichern.
+            logger_psp.warning(f"No specific period was processed. Applying base strategy to df_with_all_indicators before saving.")
+            # apply_base_strategy benötigt möglicherweise Parameter, die aus Z_config stammen
+            # oder als Argumente übergeben werden. Hier verwenden wir die Defaults oder Z_config.
+            df_to_save_final = backtest_strategy.apply_base_strategy(df_with_all_indicators.copy(), symbol, use_ut_bot=use_ut_bot_setting)
+            if df_to_save_final is None: # Sicherstellen, dass es nicht None ist
+                logger_psp.error(f"apply_base_strategy on df_with_all_indicators returned None for {symbol}.")
+                df_to_save_final = df_with_all_indicators.copy() # Fallback zum Speichern des Roh-Indikator-DFs
+        elif df_with_all_indicators is not None and not df_with_all_indicators.empty:
+            # Wenn Perioden verarbeitet wurden, aber last_processed_df_for_saving leer/None ist,
+            # nimm den df_with_all_indicators als Basis, auf dem dann die Signale der letzten Periode wären,
+            # aber das ist komplex. Sicherer ist es, df_with_all_indicators zu nehmen, auf dem die Signale für
+            # die *gesamte* Zeitspanne berechnet werden müssten.
+            # Da last_processed_df_for_saving bereits Signale enthält, ist dieser Fall weniger wahrscheinlich,
+            # außer process_observation_period_with_full_data gibt manchmal None zurück.
+            # Für Konsistenz: Wenn etwas verarbeitet wurde, sollte last_processed_df_for_saving gesetzt sein.
+            # Wenn nicht, und wir wollen trotzdem speichern, dann ist der Fall oben (not processed_a_period_flag) relevanter.
+            # Wenn processed_a_period_flag True ist, aber last_processed_df_for_saving None ist, ist das ein Fehler in der Logik.
+            # Hier nehmen wir an, wir wollen den voll indizierten Datensatz speichern, wenn nichts Besseres da ist.
+            if df_to_save_final is None : # Nur wenn noch nicht gesetzt
+                 logger_psp.warning(f"last_processed_df_for_saving was not set, but indicators were calculated. Saving df_with_all_indicators (possibly without signals from a specific period). Applying base strategy globally.")
+                 df_to_save_final = backtest_strategy.apply_base_strategy(df_with_all_indicators.copy(), symbol, use_ut_bot=use_ut_bot_setting)
 
-        # Speichern, wenn DataFrame vorhanden ist
-        if df_to_save is not None and not df_to_save.empty:
+
+        if df_to_save_final is not None and not df_to_save_final.empty:
             try:
-                # Erstelle einfaches conditions_met dict basierend auf finalem DF
                 conditions_met_simple = {
-                    'total_signals': len(df_to_save[df_to_save['signal'].isin(['buy', 'sell', 'exit_long', 'exit_short'])]) if 'signal' in df_to_save.columns else 0,
-                    'buy_signals': len(df_to_save[df_to_save['signal'] == 'buy']) if 'signal' in df_to_save.columns else 0,
-                    'sell_signals': len(df_to_save[df_to_save['signal'] == 'sell']) if 'signal' in df_to_save.columns else 0,
-                    'exit_long_signals': len(df_to_save[df_to_save['signal'] == 'exit_long']) if 'signal' in df_to_save.columns else 0,
-                    'exit_short_signals': len(df_to_save[df_to_save['signal'] == 'exit_short']) if 'signal' in df_to_save.columns else 0,
-                    # Füge ggf. weitere Zählungen hinzu, wenn die Spalten existieren
+                    'total_signals': len(df_to_save_final[df_to_save_final['signal'].isin(['buy', 'sell', 'exit_long', 'exit_short'])]) if 'signal' in df_to_save_final.columns else 0,
+                    'buy_signals': len(df_to_save_final[df_to_save_final['signal'] == 'buy']) if 'signal' in df_to_save_final.columns else 0,
+                    'sell_signals': len(df_to_save_final[df_to_save_final['signal'] == 'sell']) if 'signal' in df_to_save_final.columns else 0,
                 }
-                logging.info(f"[{symbol}] Calling save_strategy_data...")
-                print(f"Aufruf von save_strategy_data für {symbol}...")
-                # Stelle sicher, dass save_strategy_data aus utils.Backtest importiert wurde
-                save_strategy_data(df_to_save, conditions_met_simple, symbol)
-                logging.info(f"[{symbol}] save_strategy_data finished.")
-                data_saved_flag = True # Setze Flag auf True
+                logger_psp.info(f"Calling save_strategy_data for {symbol}...")
+                save_strategy_data(df_to_save_final, conditions_met_simple, symbol)
+                logger_psp.info(f"save_strategy_data finished for {symbol}.")
+                data_saved_flag = True
             except ImportError:
-                logging.error(f"[{symbol}] Cannot save strategy data: save_strategy_data function not found/imported.")
-                print(f"FEHLER: save_strategy_data nicht gefunden für {symbol}")
-            except Exception as e:
-                logging.error(f"[{symbol}] Error calling save_strategy_data: {e}", exc_info=True)
-                print(f"FEHLER beim Aufruf von save_strategy_data für {symbol}: {e}")
+                logger_psp.error(f"Cannot save strategy data: save_strategy_data function not found/imported.")
+            except Exception as e_save:
+                logger_psp.error(f"Error calling save_strategy_data for {symbol}: {e_save}", exc_info=True)
         else:
-             logging.warning(f"[{symbol}] Skipping save_strategy_data because no valid DataFrame was available.")
-
+             logger_psp.warning(f"Skipping save_strategy_data for {symbol} because no valid DataFrame was available (df_to_save_final is None or empty).")
 
         # --- Konsistenzcheck und Finalisierung ---
-        tracking_has_pos = position_tracking.get(symbol, {}).get('position_open', False)
-        active_obs_has_pos = active_observation_periods.get(symbol, {}).get('has_position', False)
-        if tracking_has_pos != active_obs_has_pos:
-            logging.warning(f"[{symbol}] INCONSISTENCY DETECTED at end: pos_track={tracking_has_pos} vs active_obs={active_obs_has_pos}. Syncing active_obs to pos_track.")
-            if symbol not in active_observation_periods: active_observation_periods[symbol] = {}
-            active_observation_periods[symbol]['has_position'] = tracking_has_pos
-            if not tracking_has_pos: active_observation_periods[symbol]['active_period'] = None # Clear period if pos closed
+        tracking_has_pos_final = position_tracking.get(symbol, {}).get('position_open', False)
+        active_obs_has_pos_final = active_observation_periods.get(symbol, {}).get('has_position', False)
+        if tracking_has_pos_final != active_obs_has_pos_final:
+            logger_psp.warning(f"INCONSISTENCY DETECTED at end of process_symbol_parallel for {symbol}: pos_track={tracking_has_pos_final} vs active_obs={active_obs_has_pos_final}. Syncing active_obs to pos_track.")
+            if symbol not in active_observation_periods: active_observation_periods[symbol] = {} # Sicherstellen, dass der Key existiert
+            active_observation_periods[symbol]['has_position'] = tracking_has_pos_final
+            if not tracking_has_pos_final:
+                active_observation_periods[symbol]['active_period'] = None
 
         # --- Performance-Dictionary vervollständigen (falls leer) ---
-        if not final_performance or 'symbol' not in final_performance:
-            logging.warning(f"[{symbol}] No performance data generated, creating default entry.")
-            if not isinstance(final_performance, dict): final_performance = {}
+        if not final_performance or 'symbol' not in final_performance: # Wenn final_performance leer ist oder das Symbol fehlt
+            logger_psp.warning(f"No specific performance data generated from period processing for {symbol}, creating default performance entry.")
+            if not isinstance(final_performance, dict): final_performance = {} # Sicherstellen, dass es ein Dict ist
+            # Fülle mit Standardwerten, falls keine Trades/Performance aus Periodenverarbeitung kam
             final_performance.update({
-                'symbol': symbol,
-                'total_trades': len(all_trades_for_symbol),
+                'symbol': symbol, 'total_trades': len(all_trades_for_symbol),
                 'win_rate': 0.0, 'total_profit': 0.0, 'max_drawdown': 0.0, 'profit_factor': 0.0,
                 'avg_profit_win': 0.0, 'avg_loss_loss': 0.0, 'total_commission': 0.0,
                 'total_slippage': 0.0, 'exit_reasons': {}, 'immediate_sl_hits': 0, 'immediate_tp_hits': 0,
-                'total_exits': 0, 'avg_profit': 0.0, 'avg_slippage': 0.0, 'stop_loss_hits': 0,
-                'take_profit_hits': 0, 'signal_exits': 0, 'backtest_end_exits': 0,
-                'trailing_stop_hits': 0, 'observation_timeout_exits': 0, 'partial_exits': 0
+                'total_exits': len(all_trades_for_symbol), 'avg_profit': 0.0, 'avg_slippage': 0.0,
+                'stop_loss_hits': 0, 'take_profit_hits': 0, 'signal_exits': 0,
+                'backtest_end_exits': 0, 'trailing_stop_hits': 0, 'observation_timeout_exits': 0,
+                'partial_exits': 0
             })
+            # Wenn es Trades gab, aber keine Performance, versuche Performance neu zu berechnen
+            if all_trades_for_symbol and 'error' in final_performance : # Nur wenn ein Fehler vorlag
+                try:
+                    from utils.backtest_strategy import calculate_performance_metrics # Import hier, falls nicht global
+                    recalculated_perf = calculate_performance_metrics(all_trades_for_symbol, symbol, getattr(Z_config, 'start_balance_parameter', 25.0))
+                    if recalculated_perf and 'error' not in recalculated_perf:
+                        logger_psp.info(f"Successfully recalculated performance for {symbol} as fallback.")
+                        final_performance = recalculated_perf
+                    else:
+                         logger_psp.warning(f"Fallback performance recalculation for {symbol} failed or also resulted in error.")
+                except Exception as e_recalc:
+                    logger_psp.error(f"Error during fallback performance recalculation for {symbol}: {e_recalc}")
 
 
         # --- Rückgabe ---
-        logging.info(f"Finished processing {symbol}. Returning {len(all_trades_for_symbol)} trade events. Data saved: {data_saved_flag}")
-        return symbol, all_trades_for_symbol, final_performance, data_saved_flag # <-- Füge data_saved_flag hinzu
+        logger_psp.info(f"Finished processing {symbol}. Returning {len(all_trades_for_symbol)} trade events. Data saved: {data_saved_flag}")
+        return symbol, all_trades_for_symbol, final_performance, data_saved_flag
 
-    except Exception as e:
-        # --- Fehlerbehandlung ---
-        logging.error(f"--- ERROR in process_symbol_parallel for {symbol}: {e} ---", exc_info=True)
-        # Versuche, globalen Status zurückzusetzen
-        if position_tracking is not None and symbol in position_tracking:
+    except Exception as e_outer:
+        # --- Äußere Fehlerbehandlung für die gesamte Funktion ---
+        logger_psp.error(f"--- FATAL ERROR in process_symbol_parallel for {symbol}: {e_outer} ---", exc_info=True)
+        # Versuche, globalen Status zurückzusetzen, falls die Dictionaries übergeben wurden und gültig sind
+        if position_tracking is not None and isinstance(position_tracking, dict) and symbol in position_tracking:
              position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
-        if active_observation_periods is not None and symbol in active_observation_periods:
+        if active_observation_periods is not None and isinstance(active_observation_periods, dict) and symbol in active_observation_periods:
              active_observation_periods[symbol] = {'has_position': False, 'active_period': None}
-        # Gib None zurück, um Fehler anzuzeigen
-        return None
+        # Gib ein Fehler-Tupel zurück, das dem erwarteten Format entspricht
+        return symbol, [], {'symbol': symbol, 'total_trades': 0, 'error': f'Outer fatal error: {e_outer}'}, False

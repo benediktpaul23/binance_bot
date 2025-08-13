@@ -22,6 +22,8 @@ from Z_config import (
     rsi_period, volume_sma, momentum_lookback,
 )
 
+import pickle
+
 
 
 
@@ -80,8 +82,6 @@ def append_to_csv(results, file_name="resultat.csv"):
         import traceback
         traceback.print_exc()
 
-# In Backtest.py (ERSETZE die alte calculate_trends Funktion hiermit)
-import utils.Backtest as Backtest # Stelle sicher, dass Z_config hier verfügbar ist oder übergebe Parameter
 import Z_config # Importiere Z_config für die Parameter
 # Importiere auch die Funktion für erweiterte Indikatoren
 try:
@@ -1064,74 +1064,8 @@ def get_data_with_context(symbol, observation_start, observation_end, context_ho
     
     return df
 
-# Globales Dictionary zur Verfolgung aktiver Beobachtungszeiträume und Positionsstatus
-active_observation_periods = {}  # Format: {symbol: {'active_period': period_data, 'has_position': bool}}
 
-def track_observation_period(symbol, action, period_data=None, has_position=None):
-    """
-    Zentrale Funktion zur Verwaltung von Beobachtungszeiträumen und ihrem Status.
-    
-    Args:
-        symbol: Trading-Symbol
-        action: 'register' (neuen Zeitraum registrieren), 'update' (Status aktualisieren),
-               'check' (Status prüfen), 'remove' (Zeitraum entfernen)
-        period_data: Bei 'register' Dictionary mit start_time, end_time, price_change_pct
-        has_position: Bei 'update' Boolean, ob eine Position geöffnet wurde
-    
-    Returns:
-        Je nach action: bei 'check' dict mit Statusinformationen, bei anderen True/False
-    """
-    global active_observation_periods
-    
-    # Initialisiere für dieses Symbol, falls noch nicht vorhanden
-    if symbol not in active_observation_periods and action != 'remove':
-        active_observation_periods[symbol] = {
-            'active_period': None,
-            'has_position': False
-        }
-    
-    if action == 'register':
-        # Neuen Beobachtungszeitraum registrieren
-        if period_data and isinstance(period_data, dict):
-            active_observation_periods[symbol]['active_period'] = {
-                'start_time': period_data.get('start_time', period_data.get('start')),
-                'end_time': period_data.get('end_time', period_data.get('end')),
-                'price_change_pct': period_data.get('price_change_pct', 0)
-            }
-            logging.info(f"Neuer Beobachtungszeitraum für {symbol} registriert: "
-                         f"{active_observation_periods[symbol]['active_period']['start_time']} bis "
-                         f"{active_observation_periods[symbol]['active_period']['end_time']}")
-            return True
-        return False
-        
-    elif action == 'update':
-        # Positionsstatus aktualisieren
-        if has_position is not None:
-            active_observation_periods[symbol]['has_position'] = has_position
-            logging.info(f"Positionsstatus für {symbol} aktualisiert: "
-                         f"{'Position geöffnet' if has_position else 'Keine Position'}")
-            return True
-        return False
-        
-    elif action == 'check':
-        # Status prüfen und zurückgeben
-        if symbol in active_observation_periods:
-            return active_observation_periods[symbol]
-        return None
-        
-    elif action == 'remove':
-        # Beobachtungszeitraum entfernen
-        if symbol in active_observation_periods:
-            del active_observation_periods[symbol]
-            logging.info(f"Beobachtungszeitraum für {symbol} entfernt")
-            return True
-        return False
-    
-    # Unbekannte Aktion
-    logging.warning(f"Unbekannte Aktion '{action}' für track_observation_period")
-    return False
 
-import pickle
 
 def get_cached_data(symbol, interval, lookback_hours, end_time=None):
     """

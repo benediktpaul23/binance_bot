@@ -15,15 +15,27 @@ logger = logging.getLogger(__name__) # Use __name__ for logger hierarchy
 # if not logger.handlers: # Avoid adding multiple handlers if imported multiple times
 #     logger.addHandler(handler)
 
+# utils/backtest_position_tracker.py
+import logging
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta, timezone
+import Z_config # Make sure this is accessible
+# Use an alias for Backtest module to avoid potential naming conflicts
+import utils.Backtest as BacktestModule 
+import copy
+
+logger = logging.getLogger(__name__)
+
 class BacktestPositionTracker:
-    """
-    Tracks positions during backtesting, handles standard and advanced position management.
-    """
     def __init__(self):
         # --- Basis-Konfiguration lesen ---
-        # Liest den Wert, den der Optimizer für diesen Trial gesetzt hat
         self.use_standard_sl_tp = getattr(Z_config, 'use_standard_sl_tp', False)
         self.commission_rate = getattr(Z_config, 'taker_fee_parameter', 0.00045)
+
+        # --- Stufe 3 Simulationsparameter ---
+        self.tsl_simulation_ticks = getattr(Z_config, 'intra_1m_tsl_simulation_ticks', 60) 
+        self.conflict_simulation_ticks_per_segment = getattr(Z_config, 'intra_1m_conflict_simulation_ticks', 20)
 
         # --- Interne Defaults (können unten überschrieben werden) ---
         self.take_profit_parameter = 0.03
@@ -32,57 +44,45 @@ class BacktestPositionTracker:
         # --- Logik basierend auf dem Modus (Standard oder Advanced) ---
         if self.use_standard_sl_tp:
             # --- Standard SL/TP Modus ---
-            # Lies die _binance Parameter, da diese vom Optimizer gesetzt werden
-            tp_val_from_config = getattr(Z_config, 'take_profit_parameter_binance', self.take_profit_parameter) # _binance Name verwenden
-            sl_val_from_config = getattr(Z_config, 'stop_loss_parameter_binance', self.stop_loss_parameter)     # _binance Name verwenden
-
-            # Validiere und setze den Take Profit Parameter
+            tp_val_from_config = getattr(Z_config, 'take_profit_parameter_binance', self.take_profit_parameter)
+            sl_val_from_config = getattr(Z_config, 'stop_loss_parameter_binance', self.stop_loss_parameter)
+            
             if tp_val_from_config is None:
                 logging.error("Z_config.take_profit_parameter_binance is None! Using default 0.03")
-                self.take_profit_parameter = 0.03 # Fallback
+                self.take_profit_parameter = 0.03
             else:
-                try:
-                    self.take_profit_parameter = float(tp_val_from_config) # Sicher zu float konvertieren
+                try: self.take_profit_parameter = float(tp_val_from_config)
                 except (ValueError, TypeError):
                     logging.error(f"Invalid value for Z_config.take_profit_parameter_binance: '{tp_val_from_config}'. Using default 0.03")
                     self.take_profit_parameter = 0.03
 
-            # Validiere und setze den Stop Loss Parameter
             if sl_val_from_config is None:
                 logging.error("Z_config.stop_loss_parameter_binance is None! Using default 0.02")
-                self.stop_loss_parameter = 0.02 # Fallback
+                self.stop_loss_parameter = 0.02
             else:
-                try:
-                    self.stop_loss_parameter = float(sl_val_from_config) # Sicher zu float konvertieren
+                try: self.stop_loss_parameter = float(sl_val_from_config)
                 except (ValueError, TypeError):
                      logging.error(f"Invalid value for Z_config.stop_loss_parameter_binance: '{sl_val_from_config}'. Using default 0.02")
                      self.stop_loss_parameter = 0.02
 
-            # Logge die verwendeten Werte (nur wenn sie gültig sind)
             if isinstance(self.stop_loss_parameter, (int, float)) and isinstance(self.take_profit_parameter, (int, float)):
-                 logging.info(f"Tracker Init (Standard): Using SL from _binance ({self.stop_loss_parameter*100:.2f}%) / TP from _binance ({self.take_profit_parameter*100:.2f}%)")
+                 logging.info(f"Tracker Init (Standard): SL={self.stop_loss_parameter*100:.2f}%, TP={self.take_profit_parameter*100:.2f}%")
             else:
-                 # Sollte durch obige Fehlerbehandlung nicht erreicht werden, aber als Absicherung
-                 logging.error(f"Tracker Init (Standard): Could not log SL/TP as values are invalid after processing. SL={self.stop_loss_parameter}, TP={self.take_profit_parameter}")
-
+                 logging.error(f"Tracker Init (Standard): SL/TP values invalid after processing. SL={self.stop_loss_parameter}, TP={self.take_profit_parameter}")
         else:
              # --- Advanced Parameter Modus (Trailing, Multi-TP) ---
-             # Lade die Parameter für den Advanced Modus
              self.trailing_activation_threshold = getattr(Z_config, 'activation_threshold', 0.5)
              self.trailing_distance = getattr(Z_config, 'trailing_distance', 1.9)
 
-             # Behandle Listenparameter, die vom Optimizer evtl. als String kommen
              tp_levels_val = getattr(Z_config, 'take_profit_levels', [1.8, 3.7, 4.0])
              if isinstance(tp_levels_val, str):
                  try:
-                     # Versuche, den String sicher zu evaluieren (Vorsicht bei eval!)
                      self.take_profit_levels = eval(tp_levels_val)
-                     if not isinstance(self.take_profit_levels, list): raise ValueError("Eval did not return a list")
+                     if not isinstance(self.take_profit_levels, list): raise ValueError("Eval did not return a list for take_profit_levels")
                  except Exception as e:
                      logging.warning(f"Could not eval take_profit_levels string '{tp_levels_val}': {e}. Using default.")
                      self.take_profit_levels = [1.8, 3.7, 4.0]
-             elif isinstance(tp_levels_val, list):
-                 self.take_profit_levels = tp_levels_val
+             elif isinstance(tp_levels_val, list): self.take_profit_levels = tp_levels_val
              else:
                  logging.warning(f"Invalid type for take_profit_levels ('{type(tp_levels_val)}'). Using default.")
                  self.take_profit_levels = [1.8, 3.7, 4.0]
@@ -90,14 +90,12 @@ class BacktestPositionTracker:
              tp_size_val = getattr(Z_config, 'take_profit_size_percentages', [35, 35, 30])
              if isinstance(tp_size_val, str):
                  try:
-                     # Versuche, den String sicher zu evaluieren
                      self.take_profit_size_percentages = eval(tp_size_val)
-                     if not isinstance(self.take_profit_size_percentages, list): raise ValueError("Eval did not return a list")
+                     if not isinstance(self.take_profit_size_percentages, list): raise ValueError("Eval did not return a list for take_profit_size_percentages")
                  except Exception as e:
                      logging.warning(f"Could not eval take_profit_size_percentages string '{tp_size_val}': {e}. Using default.")
                      self.take_profit_size_percentages = [35, 35, 30]
-             elif isinstance(tp_size_val, list):
-                 self.take_profit_size_percentages = tp_size_val
+             elif isinstance(tp_size_val, list): self.take_profit_size_percentages = tp_size_val
              else:
                  logging.warning(f"Invalid type for take_profit_size_percentages ('{type(tp_size_val)}'). Using default.")
                  self.take_profit_size_percentages = [35, 35, 30]
@@ -105,93 +103,727 @@ class BacktestPositionTracker:
              self.third_level_trailing_distance = getattr(Z_config, 'third_level_trailing_distance', 2.5)
              self.enable_breakeven = getattr(Z_config, 'enable_breakeven', False)
              self.enable_trailing_take_profit = getattr(Z_config, 'enable_trailing_take_profit', True)
-
              logging.info("Tracker Init: Using Advanced Position Management (Trailing/Multi-TP)")
 
-
-        # --- Initialisierung des Positions-Speichers ---
-        # Dieses Dictionary speichert die Daten für jede aktive Position pro Symbol
         self.positions = {}
 
-
     def open_position(self, symbol, entry_price, position_type, quantity, entry_time):
-        """Open a new position and initialize its state."""
         if symbol in self.positions and self.positions[symbol].get("is_active", False):
             logging.warning(f"Attempted to open a new position for {symbol} while one is already active. Ignoring.")
-            return None # Return None or the existing position? Returning None is safer.
+            return None
 
-        # Ensure entry_time is timezone-aware (UTC)
-        if entry_time.tzinfo is None:
-            entry_time = entry_time.replace(tzinfo=timezone.utc)
-        else:
-            entry_time = entry_time.astimezone(timezone.utc)
+        if not isinstance(entry_time, datetime): entry_time = pd.to_datetime(entry_time)
+        if entry_time.tzinfo is None: entry_time = entry_time.replace(tzinfo=timezone.utc)
+        else: entry_time = entry_time.astimezone(timezone.utc)
 
         position_id = f"{symbol}_{entry_time.strftime('%Y%m%d%H%M%S')}_{position_type}"
-
         position_data = {
-            "symbol": symbol,
-            "position_id": position_id,
-            "entry_price": entry_price,
-            "position_type": position_type,
-            "quantity": quantity, # Initial total quantity
-            "entry_time": entry_time,
-            "remaining_quantity": quantity, # Initially, remaining is total
-            "is_active": True,
-            "partial_exits": [], # List to store partial exit details
-            "exit_price": None,
-            "exit_time": None,
-            "exit_reason": None,
-            "slippage": 0.0, # Will be updated externally after opening
-
-            # --- Initialize based on Standard vs Advanced ---
-            "standard_sl": None,
-            "standard_tp": None,
-            "initial_stop": None,
-            "current_stop": None,
-            "activation_price": None,
-            "trailing_activated": False,
-            "best_price": entry_price,
-            "take_profit_levels": [],
-            "take_profit_quantities": [],
-            "current_tp_level": 0,
-            "reached_first": False,
-            "reached_second": False,
-            "reached_third": False,
-            "tp_trailing_activated": False,
-            "breakeven_activated": False,
-            "breakeven_level": None, # Store the level when activated
-            "best_tp_price": entry_price,
+            "symbol": symbol, "position_id": position_id, "entry_price": float(entry_price),
+            "position_type": position_type, "quantity": float(quantity), "entry_time": entry_time,
+            "remaining_quantity": float(quantity), "is_active": True, "partial_exits": [],
+            "exit_price": None, "exit_time": None, "exit_reason": None, "slippage": 0.0,
+            "standard_sl": None, "standard_tp": None, "initial_stop": None, "current_stop": None,
+            "activation_price": None, "trailing_activated": False, "best_price": float(entry_price),
+            "take_profit_levels": [], "take_profit_quantities": [], "current_tp_level": 0,
+            "reached_first": False, "reached_second": False, "reached_third": False,
+            "tp_trailing_activated": False, "breakeven_activated": False, "breakeven_level": None,
+            "best_tp_price": float(entry_price),
         }
 
         if self.use_standard_sl_tp:
-            # Calculate and store standard SL/TP
             if position_type == "long":
-                position_data["standard_sl"] = entry_price * (1 - self.stop_loss_parameter)
-                position_data["standard_tp"] = entry_price * (1 + self.take_profit_parameter)
+                position_data["standard_sl"] = position_data["entry_price"] * (1 - self.stop_loss_parameter)
+                position_data["standard_tp"] = position_data["entry_price"] * (1 + self.take_profit_parameter)
             else: # short
-                position_data["standard_sl"] = entry_price * (1 + self.stop_loss_parameter)
-                position_data["standard_tp"] = entry_price * (1 - self.take_profit_parameter)
-            # Set current_stop for consistency, although standard logic might bypass it
+                position_data["standard_sl"] = position_data["entry_price"] * (1 + self.stop_loss_parameter)
+                position_data["standard_tp"] = position_data["entry_price"] * (1 - self.take_profit_parameter)
             position_data["current_stop"] = position_data["standard_sl"]
-            position_data["take_profit_levels"] = [position_data["standard_tp"]] # Store TP in levels format
-
+            position_data["take_profit_levels"] = [position_data["standard_tp"]]
+            position_data["take_profit_quantities"] = [position_data["quantity"]] # For standard, 100% at the single TP
         else:
-            # Calculate advanced/trailing initial state
             if position_type == "long":
-                position_data["initial_stop"] = entry_price * (1 - self.trailing_distance / 100)
-                position_data["activation_price"] = entry_price * (1 + self.trailing_activation_threshold / 100)
+                position_data["initial_stop"] = position_data["entry_price"] * (1 - self.trailing_distance / 100) 
+                position_data["activation_price"] = position_data["entry_price"] * (1 + self.trailing_activation_threshold / 100)
             else: # short
-                position_data["initial_stop"] = entry_price * (1 + self.trailing_distance / 100)
-                position_data["activation_price"] = entry_price * (1 - self.trailing_activation_threshold / 100)
+                position_data["initial_stop"] = position_data["entry_price"] * (1 + self.trailing_distance / 100)
+                position_data["activation_price"] = position_data["entry_price"] * (1 - self.trailing_activation_threshold / 100)
             position_data["current_stop"] = position_data["initial_stop"]
-            position_data["take_profit_levels"] = self._calculate_tp_levels(entry_price, position_type)
-            position_data["take_profit_quantities"] = self._calculate_tp_quantities(quantity)
+            position_data["take_profit_levels"] = self._calculate_tp_levels(position_data["entry_price"], position_type)
+            position_data["take_profit_quantities"] = self._calculate_tp_quantities(position_data["quantity"])
 
         self.positions[symbol] = position_data
-        logging.info(f"Position opened in tracker for {symbol} (ID: {position_id})")
-        return position_data # Return the created position data
+        logging.info(f"Position opened for {symbol} (ID: {position_id}) at {position_data['entry_price']:.5f}. Initial Stop: {position_data['current_stop']:.5f}")
+        return copy.deepcopy(position_data)
+
+    def _calculate_tp_levels(self, entry_price, position_type):
+        tp_levels_prices = []
+        for level_pct in self.take_profit_levels: # Uses the list from __init__
+            if position_type == "long":
+                tp_levels_prices.append(entry_price * (1 + float(level_pct) / 100))
+            else:
+                tp_levels_prices.append(entry_price * (1 - float(level_pct) / 100))
+        return tp_levels_prices
+
+    def _calculate_tp_quantities(self, total_quantity):
+        tp_quantities = []
+        remaining_qty_for_calc = float(total_quantity)
+        # Ensure percentages sum to 100 or normalize
+        current_sum_pct = sum(self.take_profit_size_percentages) # Uses the list from __init__
+        normalized_percentages = list(self.take_profit_size_percentages) # Start with a copy
+
+        if not np.isclose(current_sum_pct, 100.0) and current_sum_pct > 0:
+            logging.warning(f"TP size percentages {self.take_profit_size_percentages} do not sum to 100. Normalizing.")
+            normalized_percentages = [(p / current_sum_pct) * 100 for p in self.take_profit_size_percentages]
+        elif current_sum_pct == 0 and len(self.take_profit_size_percentages) > 0 :
+             equal_share = 100.0 / len(self.take_profit_size_percentages)
+             normalized_percentages = [equal_share] * len(self.take_profit_size_percentages)
+             logging.warning(f"TP size percentages sum to 0. Distributing equally: {normalized_percentages}")
+        
+        if not normalized_percentages and total_quantity > 0 : # if no TP sizes defined, but TP levels exist, assume 100% at first TP
+            if self.take_profit_levels :
+                normalized_percentages = [100.0] + [0.0] * (len(self.take_profit_levels) -1)
 
 
+        for i, pct in enumerate(normalized_percentages):
+            if i == len(normalized_percentages) - 1: # Last level gets all remaining
+                qty_to_exit = remaining_qty_for_calc
+            else:
+                qty_to_exit = float(total_quantity) * (float(pct) / 100.0)
+            
+            qty_to_exit = min(qty_to_exit, remaining_qty_for_calc) 
+            tp_quantities.append(qty_to_exit)
+            remaining_qty_for_calc -= qty_to_exit
+            if remaining_qty_for_calc < 1e-9: 
+                tp_quantities.extend([0.0] * (len(normalized_percentages) - (i + 1))) 
+                break
+        return tp_quantities
+
+    def _get_current_fixed_sl_and_next_tp(self, position_data):
+        sl_price = position_data["current_stop"] 
+        active_tp_price = None
+        if self.use_standard_sl_tp:
+            active_tp_price = position_data.get("standard_tp")
+        else:
+            for i in range(len(position_data.get("take_profit_levels", []))):
+                level_flag = f"reached_{['first', 'second', 'third'][i]}" if i < 3 else f"reached_{i+1}"
+                # Ensure take_profit_quantities has an entry for this level
+                if i < len(position_data.get("take_profit_quantities", [])):
+                    if not position_data.get(level_flag, False) and position_data["take_profit_quantities"][i] > 1e-9:
+                        active_tp_price = position_data["take_profit_levels"][i]
+                        break
+                else: # Should not happen if initialized correctly
+                    logging.warning(f"Missing take_profit_quantities for TP level {i+1} for {position_data['symbol']}")
+                    break 
+        return sl_price, active_tp_price
+
+    def _calculate_new_tsl_level(self, position_data, best_price_for_tsl):
+        if position_data["position_type"] == "long":
+            return best_price_for_tsl * (1 - self.trailing_distance / 100)
+        else:
+            return best_price_for_tsl * (1 + self.trailing_distance / 100)
+
+    def _update_tsl_stop_if_better(self, position_data, proposed_stop_level):
+        stop_changed = False
+        original_stop = position_data["current_stop"]
+        if position_data["position_type"] == "long":
+            if proposed_stop_level > original_stop:
+                position_data["current_stop"] = proposed_stop_level
+                stop_changed = True
+        else: # short
+            if proposed_stop_level < original_stop:
+                position_data["current_stop"] = proposed_stop_level
+                stop_changed = True
+        if stop_changed:
+             logging.debug(f"TSL UPDATED for {position_data['symbol']} from {original_stop:.5f} to {proposed_stop_level:.5f} based on best_price {position_data['best_price']:.5f}")
+        return stop_changed
+
+    def _resolve_1m_candle_sl_tp_ambiguity(
+        self, one_m_candle_ohlc, sl_level, tp_level, position_type
+    ):
+        o,h,l,c = one_m_candle_ohlc['open'], one_m_candle_ohlc['high'], one_m_candle_ohlc['low'], one_m_candle_ohlc['close']
+        logger.debug(
+            f"Stufe 3.2 SL/TP Conflict Sim: O={o:.5f}, H={h:.5f}, L={l:.5f} | SL={sl_level:.5f}, TP={tp_level:.5f}, Type={position_type}"
+        )
+        num_ticks = self.conflict_simulation_ticks_per_segment
+
+        if position_type == "long":
+            if o != l:
+                path_ol = np.linspace(o, l, num_ticks)
+                for price_tick in path_ol:
+                    if price_tick <= sl_level: return "sl"
+                    if price_tick >= tp_level: return "tp"
+            elif o <= sl_level: return "sl"
+            elif o >= tp_level: return "tp"
+            if l != h:
+                path_lh = np.linspace(l, h, num_ticks)[1:]
+                for price_tick in path_lh:
+                    if price_tick <= sl_level: return "sl" 
+                    if price_tick >= tp_level: return "tp"
+        elif position_type == "short":
+            if o != h:
+                path_oh = np.linspace(o, h, num_ticks)
+                for price_tick in path_oh:
+                    if price_tick >= sl_level: return "sl"
+                    if price_tick <= tp_level: return "tp"
+            elif o >= sl_level: return "sl"
+            elif o <= tp_level: return "tp"
+            if h != l:
+                path_hl = np.linspace(h, l, num_ticks)[1:]
+                for price_tick in path_hl:
+                    if price_tick >= sl_level: return "sl"
+                    if price_tick <= tp_level: return "tp"
+        
+        logger.warning(f"Stufe 3.2 Sim: Path inconclusive. Defaulting to 'sl'. O={o},H={h},L={l},SL={sl_level},TP={tp_level}")
+        return "sl"
+
+    def _simulate_seconds_for_trailing_stop(
+        self, position_data_sim, one_m_candle_ohlc, one_m_candle_time_utc
+    ):
+        o,h,l,c = one_m_candle_ohlc['open'], one_m_candle_ohlc['high'], one_m_candle_ohlc['low'], one_m_candle_ohlc['close']
+        pos_type = position_data_sim["position_type"]
+        
+        logger.debug(f"Stufe 3.1 TSL Sim: {position_data_sim['symbol']} 1m O={o:.5f} H={h:.5f} L={l:.5f} C={c:.5f} | Current TSL={position_data_sim['current_stop']:.5f}, BestPrice={position_data_sim['best_price']:.5f}")
+
+        path_segments_combined = []
+        num_ticks_per_segment = max(1, self.tsl_simulation_ticks // 3) 
+
+        current_path_point = o
+        path_segments_combined.append(current_path_point)
+
+        target_points_long = [l, h, c]
+        target_points_short = [h, l, c]
+        targets = target_points_long if pos_type == "long" else target_points_short
+
+        for target_point in targets:
+            if abs(current_path_point - target_point) > 1e-9: # If not already at target
+                segment = np.linspace(current_path_point, target_point, num_ticks_per_segment + 1) # +1 to include end point
+                path_segments_combined.extend(segment[1:]) # Add all but the first (already have current_path_point)
+                current_path_point = target_point
+            elif target_point != path_segments_combined[-1]: # If target is same as current but not last in list
+                 path_segments_combined.append(target_point)
+
+
+        path = [val for i, val in enumerate(path_segments_combined) if i == 0 or abs(val - path_segments_combined[i-1]) > 1e-9] # Remove consecutive duplicates due to float precision
+        if not path: path = [o,l,h,c] 
+
+        num_total_ticks_in_path = len(path)
+        if num_total_ticks_in_path <= 1: 
+             logger.warning(f"Stufe 3.1 TSL Sim: Path for {position_data_sim['symbol']} resulted in {num_total_ticks_in_path} tick(s). Skipping detailed sim for this candle, will use 1m OHLC.")
+             return None, position_data_sim # Fallback to 1m OHLC check if path is too simple
+
+        for i, tick_price in enumerate(path):
+            if pos_type == "long":
+                if tick_price > position_data_sim["best_price"]:
+                    position_data_sim["best_price"] = tick_price
+                    if not position_data_sim["trailing_activated"]:
+                        if position_data_sim["entry_price"] > 0:
+                             price_mv_pct = ((position_data_sim["best_price"] - position_data_sim["entry_price"]) / position_data_sim["entry_price"]) * 100
+                             if price_mv_pct >= self.trailing_activation_threshold:
+                                position_data_sim["trailing_activated"] = True
+                                logging.debug(f"Stufe 3.1 Sim: TSL ACTIVATED for {position_data_sim['symbol']} at tick_price {tick_price:.5f}")
+                    if position_data_sim["trailing_activated"]:
+                        new_tsl = self._calculate_new_tsl_level(position_data_sim, position_data_sim["best_price"])
+                        self._update_tsl_stop_if_better(position_data_sim, new_tsl)
+            else: # short
+                if tick_price < position_data_sim["best_price"]:
+                    position_data_sim["best_price"] = tick_price
+                    if not position_data_sim["trailing_activated"]:
+                        if position_data_sim["entry_price"] > 0:
+                            price_mv_pct = ((position_data_sim["entry_price"] - position_data_sim["best_price"]) / position_data_sim["entry_price"]) * 100
+                            if price_mv_pct >= self.trailing_activation_threshold:
+                                position_data_sim["trailing_activated"] = True
+                                logging.debug(f"Stufe 3.1 Sim: TSL ACTIVATED for {position_data_sim['symbol']} at tick_price {tick_price:.5f}")
+                    if position_data_sim["trailing_activated"]:
+                        new_tsl = self._calculate_new_tsl_level(position_data_sim, position_data_sim["best_price"])
+                        self._update_tsl_stop_if_better(position_data_sim, new_tsl)
+            
+            current_tsl_to_check = position_data_sim["current_stop"]
+            tsl_hit_this_tick = False
+            # Check if TSL is active OR if it's the initial stop and breakeven isn't active yet.
+            is_tsl_or_initial_stop_relevant = position_data_sim["trailing_activated"] or \
+                                             (not position_data_sim.get("breakeven_activated", False) and \
+                                              current_tsl_to_check == position_data_sim.get("initial_stop"))
+
+            if is_tsl_or_initial_stop_relevant:
+                 if pos_type == "long" and tick_price <= current_tsl_to_check: tsl_hit_this_tick = True
+                 elif pos_type == "short" and tick_price >= current_tsl_to_check: tsl_hit_this_tick = True
+
+            if tsl_hit_this_tick:
+                exit_price_tsl = current_tsl_to_check
+                fraction = (i + 1) / num_total_ticks_in_path if num_total_ticks_in_path > 1 else 0.5 # Avoid div by zero if path is 1 tick
+                sim_exit_time_delta_seconds = int(60 * fraction)
+                sim_exit_time = one_m_candle_time_utc + timedelta(seconds=min(59, sim_exit_time_delta_seconds)) # Cap at 59s
+                
+                exit_reason_tsl = "trailing_stop_simulated" 
+                if position_data_sim.get("breakeven_activated", False):
+                    be_level = position_data_sim.get("breakeven_level")
+                    if be_level is not None:
+                        if (pos_type == "long" and exit_price_tsl >= be_level) or \
+                           (pos_type == "short" and exit_price_tsl <= be_level):
+                            exit_reason_tsl = "breakeven_stop_simulated"
+                elif not position_data_sim["trailing_activated"] and current_tsl_to_check == position_data_sim.get("initial_stop"):
+                    exit_reason_tsl = "initial_stop_simulated"
+
+                logging.info(f"Stufe 3.1 Sim: {exit_reason_tsl.upper()} HIT for {position_data_sim['symbol']} at tick {i+1}. Price={tick_price:.5f}, StopLevel={exit_price_tsl:.5f}. SimExitTime: {sim_exit_time}")
+                exit_details = self._finalize_simulated_exit(position_data_sim, exit_price_tsl, sim_exit_time, exit_reason_tsl)
+                return exit_details, position_data_sim
+                
+        logger.debug(f"Stufe 3.1 Sim: No TSL hit for {position_data_sim['symbol']}. Final TSL: {position_data_sim['current_stop']:.5f}, BestPrice: {position_data_sim['best_price']:.5f}")
+        return None, position_data_sim
+
+    def _finalize_simulated_exit(self, sim_pos_data, exit_price, exit_time, exit_reason):
+        exit_qty = sim_pos_data["remaining_quantity"]
+        sim_pos_data["is_active"] = False
+        sim_pos_data["exit_price"] = exit_price
+        sim_pos_data["exit_time"] = exit_time
+        sim_pos_data["exit_reason"] = exit_reason
+        sim_pos_data["remaining_quantity"] = 0
+        
+        return {
+            "symbol": sim_pos_data["symbol"], "position_id": sim_pos_data.get("position_id"),
+            "exit_price": exit_price, "exit_time": exit_time, "exit_reason": exit_reason,
+            "exit_quantity": exit_qty, "remaining_quantity": 0, "full_exit": True,
+            "breakeven_activated": sim_pos_data.get("breakeven_activated", False),
+            "exit_level": sim_pos_data.get("current_tp_level", 0)
+        }
+
+    def _simulate_intra_candle_advanced_exits(self, symbol, original_main_candle_series):
+        if symbol not in self.positions or not self.positions[symbol].get("is_active", False):
+            return [], self.positions.get(symbol) 
+        if self.use_standard_sl_tp:
+            return [], self.positions[symbol]
+
+        simulated_position = copy.deepcopy(self.positions[symbol])
+
+        original_main_candle_time = original_main_candle_series.name
+        if not isinstance(original_main_candle_time, pd.Timestamp): original_main_candle_time = pd.Timestamp(original_main_candle_time)
+        if original_main_candle_time.tzinfo is None: original_main_candle_time = original_main_candle_time.tz_localize('UTC')
+        else: original_main_candle_time = original_main_candle_time.tz_convert('UTC')
+        
+        logger.info(f"--- Stufe 2: Intra-Main-Candle Sim Start ({symbol}) for main candle ending {original_main_candle_time} ---")
+        log_initial_state = (f"Initial Sim State: Qty={simulated_position['remaining_quantity']:.8f}, Stop={simulated_position['current_stop']:.5f}, BestPrice={simulated_position['best_price']:.5f}, TSLActive={simulated_position['trailing_activated']}")
+        logger.debug(log_initial_state)
+
+        main_interval_str = getattr(Z_config, 'interval', '5m') 
+        main_interval_minutes = Backtest.parse_interval_to_minutes(main_interval_str)
+        if main_interval_minutes is None or main_interval_minutes <=0:
+            logger.error(f"Stufe 2: Invalid main interval '{main_interval_str}'. Aborting simulation for this candle.")
+            return [], simulated_position
+
+        main_candle_logical_start_time = original_main_candle_time - timedelta(minutes=main_interval_minutes)
+        
+        try:
+            one_min_df = Backtest.fetch_data(
+                symbol=symbol, interval="1m",
+                end_time=original_main_candle_time, 
+                start_time_force=main_candle_logical_start_time
+            )
+            if one_min_df is None or one_min_df.empty:
+                logger.warning(f"Stufe 2: No 1m data for {symbol} in main candle range {main_candle_logical_start_time} to {original_main_candle_time}. No Stufe 2/3 sim possible.")
+                return [], simulated_position
+            one_min_df = one_min_df[(one_min_df.index >= main_candle_logical_start_time) & (one_min_df.index < original_main_candle_time)]
+            if one_min_df.empty:
+                logger.warning(f"Stufe 2: No 1m data after strict time filtering for {symbol}. No Stufe 2/3 sim possible.")
+                return [], simulated_position
+            logger.info(f"Stufe 2: Found {len(one_min_df)} 1m candles for main candle {original_main_candle_time}.")
+        except Exception as e:
+            logger.error(f"Stufe 2: Error fetching/filtering 1m data for {symbol}: {e}", exc_info=True)
+            return [], simulated_position
+
+        exits_found_in_main_candle = []
+        pos_type = simulated_position["position_type"]
+        entry_price_for_be = simulated_position["entry_price"]
+
+        for one_m_candle_time_idx, one_m_candle_series in one_min_df.iterrows():
+            if not simulated_position["is_active"]: break
+
+            one_m_candle_time_utc = one_m_candle_time_idx.tz_convert('UTC') if one_m_candle_time_idx.tzinfo else one_m_candle_time_idx.tz_localize('UTC')
+            one_m_ohlc = {
+                'open': float(one_m_candle_series['open']), 'high': float(one_m_candle_series['high']),
+                'low': float(one_m_candle_series['low']), 'close': float(one_m_candle_series['close'])
+            }
+            logger.debug(f"--- Stufe 2: Processing 1m candle @ {one_m_candle_time_utc} O={one_m_ohlc['open']:.5f} H={one_m_ohlc['high']:.5f} L={one_m_ohlc['low']:.5f} C={one_m_ohlc['close']:.5f} ---")
+            
+            # STUFE 2.b: Trailing Stop Logic
+            tsl_exit_details_from_1m_processing = None
+            needs_tsl_seconds_sim = False
+            if simulated_position["trailing_activated"] or (not simulated_position.get("breakeven_activated") and simulated_position["current_stop"] == simulated_position.get("initial_stop")):
+                current_stop_to_check = simulated_position["current_stop"]
+                if pos_type == "long":
+                    if one_m_ohlc['low'] <= current_stop_to_check: needs_tsl_seconds_sim = True
+                    if one_m_ohlc['high'] > simulated_position["best_price"]: needs_tsl_seconds_sim = True
+                else: 
+                    if one_m_ohlc['high'] >= current_stop_to_check: needs_tsl_seconds_sim = True
+                    if one_m_ohlc['low'] < simulated_position["best_price"]: needs_tsl_seconds_sim = True
+            
+            if needs_tsl_seconds_sim:
+                logger.debug(f"Stufe 2.b.ii: TSL Seconds Simulation (Stufe 3.1) triggered for {symbol} at {one_m_candle_time_utc}.")
+                tsl_exit_details_from_1m_processing, simulated_position = self._simulate_seconds_for_trailing_stop(
+                    simulated_position, one_m_ohlc, one_m_candle_time_utc
+                )
+                if tsl_exit_details_from_1m_processing:
+                    exits_found_in_main_candle.append(tsl_exit_details_from_1m_processing)
+                    break 
+            else: 
+                made_tsl_related_update_coarse = False
+                if pos_type == "long":
+                    if one_m_ohlc['high'] > simulated_position["best_price"]:
+                        simulated_position["best_price"] = one_m_ohlc['high']; made_tsl_related_update_coarse = True
+                else: 
+                    if one_m_ohlc['low'] < simulated_position["best_price"]:
+                        simulated_position["best_price"] = one_m_ohlc['low']; made_tsl_related_update_coarse = True
+                
+                if not simulated_position["trailing_activated"] and made_tsl_related_update_coarse :
+                    price_mv_pct = 0
+                    if simulated_position["entry_price"] > 0:
+                        if pos_type == "long": price_mv_pct = ((simulated_position["best_price"] - simulated_position["entry_price"]) / simulated_position["entry_price"]) * 100
+                        else: price_mv_pct = ((simulated_position["entry_price"] - simulated_position["best_price"]) / simulated_position["entry_price"]) * 100
+                    if price_mv_pct >= self.trailing_activation_threshold:
+                        simulated_position["trailing_activated"] = True
+                        logging.debug(f"Stufe 2.b.iii: TSL ACTIVATED (coarse) for {symbol} via 1m OHLC.")
+
+                if simulated_position["trailing_activated"] and made_tsl_related_update_coarse: # Update TSL if best_price changed
+                    new_tsl_level = self._calculate_new_tsl_level(simulated_position, simulated_position["best_price"])
+                    self._update_tsl_stop_if_better(simulated_position, new_tsl_level)
+                
+                current_stop_coarse_check = simulated_position["current_stop"]
+                tsl_hit_coarse = False; exit_price_coarse_tsl = None
+                is_tsl_or_initial_relevant_coarse = simulated_position["trailing_activated"] or \
+                   (not simulated_position.get("breakeven_activated") and current_stop_coarse_check == simulated_position.get("initial_stop"))
+
+                if is_tsl_or_initial_relevant_coarse:
+                    if pos_type == "long" and one_m_ohlc['low'] <= current_stop_coarse_check:
+                        tsl_hit_coarse = True; exit_price_coarse_tsl = current_stop_coarse_check
+                    elif pos_type == "short" and one_m_ohlc['high'] >= current_stop_coarse_check:
+                        tsl_hit_coarse = True; exit_price_coarse_tsl = current_stop_coarse_check
+                
+                if tsl_hit_coarse:
+                    reason_coarse = "trailing_stop_1m_ohlc"
+                    if not simulated_position["trailing_activated"] and current_stop_coarse_check == simulated_position.get("initial_stop"):
+                        reason_coarse = "initial_stop_1m_ohlc"
+                    elif simulated_position.get("breakeven_activated", False):
+                        be_level = simulated_position.get("breakeven_level")
+                        if be_level is not None and ((pos_type == "long" and exit_price_coarse_tsl >= be_level) or (pos_type == "short" and exit_price_coarse_tsl <= be_level)):
+                            reason_coarse = "breakeven_stop_1m_ohlc"
+                    
+                    logging.info(f"Stufe 2.b.iii: TSL/Initial HIT (coarse) for {symbol} on 1m OHLC {one_m_candle_time_utc}. Price={exit_price_coarse_tsl:.5f}, Stop={current_stop_coarse_check:.5f}")
+                    exit_event = self._finalize_simulated_exit(simulated_position, exit_price_coarse_tsl, one_m_candle_time_utc, reason_coarse)
+                    exits_found_in_main_candle.append(exit_event)
+                    break 
+
+            if not simulated_position["is_active"]: continue
+
+            # STUFE 2.c: Feste SL/TP-Konflikte
+            current_sl_for_conflict, next_tp_for_conflict = self._get_current_fixed_sl_and_next_tp(simulated_position)
+            sl_touched_by_1m = (current_sl_for_conflict is not None) and \
+                               ((pos_type == "long" and one_m_ohlc['low'] <= current_sl_for_conflict) or \
+                                (pos_type == "short" and one_m_ohlc['high'] >= current_sl_for_conflict))
+            tp_touched_by_1m = (next_tp_for_conflict is not None) and \
+                               ((pos_type == "long" and one_m_ohlc['high'] >= next_tp_for_conflict) or \
+                                (pos_type == "short" and one_m_ohlc['low'] <= next_tp_for_conflict))
+
+            if sl_touched_by_1m and tp_touched_by_1m:
+                logger.info(f"Stufe 2.c.i: Conflict on 1m candle {one_m_candle_time_utc} for {symbol}. Escalating to Stufe 3.2.")
+                hit_order = self._resolve_1m_candle_sl_tp_ambiguity(one_m_ohlc, current_sl_for_conflict, next_tp_for_conflict, pos_type)
+                logger.info(f"Stufe 3.2 Result for {symbol} (1m conflict): '{hit_order}' hit first.")
+                if hit_order == "sl":
+                    sl_conflict_reason = "stop_loss_conflict_res" # Generic, could be BE or TSL if they became the fixed stop
+                    exit_event = self._finalize_simulated_exit(simulated_position, current_sl_for_conflict, one_m_candle_time_utc, sl_conflict_reason)
+                    exits_found_in_main_candle.append(exit_event)
+                    break 
+                elif hit_order == "tp":
+                    price_hit_tp = one_m_ohlc['high'] if pos_type == "long" else one_m_ohlc['low']
+                    tp_conflict_exits = self._update_take_profit_from_sim_state(simulated_position, price_hit_tp, one_m_candle_time_utc, "take_profit_conflict_res")
+                    if tp_conflict_exits: exits_found_in_main_candle.extend(tp_conflict_exits)
+                    if not simulated_position["is_active"]: break 
+                if not simulated_position["is_active"]: continue
+
+            # STUFE 2.d: Standard SL/TP Checks (wenn kein Konflikt oben zur Schließung führte)
+            if not simulated_position["is_active"]: continue
+            
+            # 1. Check SL (current_stop könnte initial, TSL oder BE sein)
+            # Nur prüfen, wenn kein Konflikt mit TP vorlag oder dieser TP bevorzugte
+            if not (sl_touched_by_1m and tp_touched_by_1m and hit_order == "tp"): # Don't re-check SL if TP conflict was resolved to TP
+                final_sl_to_check_d = simulated_position["current_stop"] 
+                sl_hit_in_2d = False; sl_hit_price_2d = None
+                if (pos_type == "long" and one_m_ohlc['low'] <= final_sl_to_check_d): sl_hit_in_2d = True; sl_hit_price_2d = final_sl_to_check_d
+                elif (pos_type == "short" and one_m_ohlc['high'] >= final_sl_to_check_d): sl_hit_in_2d = True; sl_hit_price_2d = final_sl_to_check_d
+                
+                if sl_hit_in_2d:
+                    reason_2d_sl = "stop_loss_1m_ohlc" # Default reason
+                    if simulated_position.get("breakeven_activated", False): reason_2d_sl = "breakeven_stop_1m_ohlc"
+                    elif simulated_position.get("trailing_activated", False) and final_sl_to_check_d != simulated_position.get("initial_stop"):
+                        reason_2d_sl = "trailing_stop_1m_ohlc"
+                    elif not simulated_position.get("trailing_activated", False) and final_sl_to_check_d == simulated_position.get("initial_stop"):
+                         reason_2d_sl = "initial_stop_1m_ohlc"
+                    logging.info(f"Stufe 2.d: SL HIT for {symbol} on 1m OHLC {one_m_candle_time_utc}. Price={sl_hit_price_2d:.5f}, Stop={final_sl_to_check_d:.5f}")
+                    exit_event = self._finalize_simulated_exit(simulated_position, sl_hit_price_2d, one_m_candle_time_utc, reason_2d_sl)
+                    exits_found_in_main_candle.append(exit_event)
+                    break 
+            
+            if not simulated_position["is_active"]: continue
+
+            # 2. Check Take Profit
+            if not (sl_touched_by_1m and tp_touched_by_1m and hit_order == "sl"): # Don't re-check TP if SL conflict was resolved to SL
+                price_for_tp_check_2d = one_m_ohlc['high'] if pos_type == "long" else one_m_ohlc['low']
+                tp_exits_2d = self._update_take_profit_from_sim_state(simulated_position, price_for_tp_check_2d, one_m_candle_time_utc, "take_profit_1m_ohlc")
+                if tp_exits_2d: exits_found_in_main_candle.extend(tp_exits_2d)
+            
+            if not simulated_position["is_active"]: break 
+        
+        logger.info(f"--- Stufe 2: Intra-Main-Candle Sim End ({symbol}). Found {len(exits_found_in_main_candle)} exit events. ---")
+        log_final_state = (f"Final Sim State for {symbol} (after 1m loop): Active={simulated_position['is_active']}, Qty={simulated_position['remaining_quantity']:.8f}, Stop={simulated_position['current_stop']:.5f}, ExitReason={simulated_position.get('exit_reason', 'N/A')}")
+        logger.debug(log_final_state)
+        return exits_found_in_main_candle, simulated_position
+
+    def _resolve_main_candle_conflict_via_1m(self, symbol, main_candle_series, initial_sl, initial_tp):
+        position = self.positions.get(symbol) 
+        if not position or not position["is_active"]:
+            logger.warning(f"Resolve Main Candle Conflict: Called for inactive/non-existent position {symbol}")
+            return "tp", main_candle_series.name 
+
+        main_candle_time = main_candle_series.name
+        if not isinstance(main_candle_time, pd.Timestamp): main_candle_time = pd.Timestamp(main_candle_time)
+        if main_candle_time.tzinfo is None: main_candle_time = main_candle_time.tz_localize('UTC')
+        else: main_candle_time = main_candle_time.tz_convert('UTC')
+
+        logger.info(f"Stufe 1.B: Resolving Main Entry Candle Conflict for {symbol} @ {main_candle_time}")
+        logger.info(f"  Initial SL: {initial_sl:.5f}, Initial TP: {initial_tp:.5f}, Type: {position['position_type']}")
+
+        main_interval_str = getattr(Z_config, 'interval', '5m')
+        main_interval_minutes = Backtest.parse_interval_to_minutes(main_interval_str)
+        if main_interval_minutes is None or main_interval_minutes <= 0 :
+            logger.warning(f"Could not parse main interval for entry conflict. Defaulting to TP priority at main candle time.")
+            return "tp", main_candle_time
+
+        mc_start_time = main_candle_time - timedelta(minutes=main_interval_minutes)
+        mc_end_time = main_candle_time
+        
+        try:
+            one_min_df_entry_conflict = Backtest.fetch_data(
+                symbol=symbol, interval="1m",
+                end_time=mc_end_time, start_time_force=mc_start_time
+            )
+            if one_min_df_entry_conflict is None or one_min_df_entry_conflict.empty:
+                logger.warning(f"EntryConflict: No 1m data for {symbol}. Defaulting to TP at main candle time.")
+                return "tp", main_candle_time
+            
+            one_min_df_entry_conflict = one_min_df_entry_conflict[
+                (one_min_df_entry_conflict.index >= mc_start_time) & 
+                (one_min_df_entry_conflict.index < mc_end_time)
+            ]
+            if one_min_df_entry_conflict.empty:
+                logger.warning(f"EntryConflict: No 1m data after strict filtering for {symbol}. Defaulting to TP at main candle time.")
+                return "tp", main_candle_time
+
+            for one_m_candle_time_idx, one_m_candle in one_min_df_entry_conflict.iterrows():
+                l, h = float(one_m_candle['low']), float(one_m_candle['high'])
+                o, c = float(one_m_candle['open']), float(one_m_candle['close'])
+                one_m_ohlc_dict = {'open':o, 'high':h, 'low':l, 'close':c}
+                sl_hit = (position["position_type"] == "long" and l <= initial_sl) or \
+                           (position["position_type"] == "short" and h >= initial_sl)
+                tp_hit = (position["position_type"] == "long" and h >= initial_tp) or \
+                           (position["position_type"] == "short" and l <= initial_tp)
+
+                if sl_hit and tp_hit:
+                    logger.info(f"EntryConflict: Ambiguity in 1m sub-candle @ {one_m_candle_time_idx}. Using Stufe 3.2 path simulation.")
+                    hit_order_str = self._resolve_1m_candle_sl_tp_ambiguity(one_m_ohlc_dict, initial_sl, initial_tp, position["position_type"])
+                    return hit_order_str, one_m_candle_time_idx
+                if sl_hit: return "sl", one_m_candle_time_idx
+                if tp_hit: return "tp", one_m_candle_time_idx
+            
+            logger.warning(f"EntryConflict: 1m data did not show clear SL or TP hit for initial levels. Defaulting TP at main candle time.")
+            return "tp", main_candle_time
+        except Exception as e:
+            logger.error(f"Error in _resolve_main_candle_conflict_via_1m: {e}", exc_info=True)
+            return "tp", main_candle_time
+
+    def update_position_standard_mode(self, symbol, main_candle_h, main_candle_l, main_candle_time):
+        if symbol not in self.positions or not self.positions[symbol]["is_active"] or not self.use_standard_sl_tp:
+            return None 
+        
+        position = self.positions[symbol]
+        pos_type = position["position_type"]
+        sl_price = position.get("standard_sl")
+        tp_price = position.get("standard_tp")
+
+        if sl_price is None or tp_price is None: return None 
+        if main_candle_time.tzinfo is None: main_candle_time = main_candle_time.replace(tzinfo=timezone.utc)
+        else: main_candle_time = main_candle_time.astimezone(timezone.utc)
+
+        sl_triggered = False; tp_triggered = False
+        if pos_type == "long":
+            if main_candle_l <= sl_price: sl_triggered = True
+            if main_candle_h >= tp_price: tp_triggered = True
+        else: 
+            if main_candle_h >= sl_price: sl_triggered = True
+            if main_candle_l <= tp_price: tp_triggered = True
+        
+        if sl_triggered and tp_triggered:
+            logger.warning(f"Standard Mode: {symbol} SL and TP triggered on same main candle {main_candle_time}. Using 1m resolution for order.")
+            main_candle_series_dummy = pd.Series(name=main_candle_time) 
+            resolution, resolved_time = self._resolve_main_candle_conflict_via_1m(symbol, main_candle_series_dummy, sl_price, tp_price)
+            
+            if resolution == "sl": return self._close_position(symbol, sl_price, resolved_time, "standard_stop_loss_resolved")
+            else: return self._close_position(symbol, tp_price, resolved_time, "standard_take_profit_resolved")
+        elif sl_triggered: return self._close_position(symbol, sl_price, main_candle_time, "standard_stop_loss")
+        elif tp_triggered: return self._close_position(symbol, tp_price, main_candle_time, "standard_take_profit")
+        return None
+
+    def _close_position(self, symbol, exit_price, exit_time_dt, exit_reason):
+        if symbol not in self.positions or not self.positions[symbol]["is_active"]:
+            logging.warning(f"Attempted to close already inactive or non-existent position for {symbol}")
+            return None
+
+        position_to_close = self.positions[symbol] 
+        
+        if not isinstance(exit_time_dt, datetime): exit_time_dt = pd.to_datetime(exit_time_dt)
+        if exit_time_dt.tzinfo is None: exit_time_dt = exit_time_dt.replace(tzinfo=timezone.utc)
+        else: exit_time_dt = exit_time_dt.astimezone(timezone.utc)
+
+        exit_quantity_val = position_to_close["remaining_quantity"]
+        position_to_close["is_active"] = False
+        position_to_close["exit_price"] = float(exit_price)
+        position_to_close["exit_time"] = exit_time_dt
+        position_to_close["exit_reason"] = exit_reason
+        position_to_close["remaining_quantity"] = 0.0 
+        
+        logging.info(f"POSITION CLOSED (Tracker Store): {symbol} (ID: {position_to_close.get('position_id')}). Reason: {exit_reason}, Price: {exit_price:.5f}, Time: {exit_time_dt}")
+
+        return { 
+            "symbol": symbol, "position_id": position_to_close.get("position_id"),
+            "exit_price": float(exit_price), "exit_time": exit_time_dt, "exit_reason": exit_reason,
+            "exit_quantity": exit_quantity_val, "remaining_quantity": 0.0, "full_exit": True,
+            "breakeven_activated": position_to_close.get("breakeven_activated", False),
+            "exit_level": position_to_close.get("current_tp_level", 0) 
+        }
+
+    def get_position(self, symbol):
+        if symbol in self.positions:
+            return copy.deepcopy(self.positions.get(symbol))
+        return None
+
+    def get_all_active_positions(self):
+        active = {}
+        for symbol, pos_data in self.positions.items():
+            if pos_data.get("is_active", False):
+                active[symbol] = copy.deepcopy(pos_data)
+        return active
+
+    def _update_take_profit_from_sim_state(self, sim_pos_data, current_price_for_tp, current_time_utc, base_reason="take_profit"):
+        """Manages multi-TP logic within a simulation. Modifies sim_pos_data. Returns list of exit events."""
+        if self.use_standard_sl_tp: 
+            std_tp = sim_pos_data.get("standard_tp")
+            if std_tp is not None:
+                tp_hit = False
+                if sim_pos_data["position_type"] == "long" and current_price_for_tp >= std_tp: tp_hit = True
+                elif sim_pos_data["position_type"] == "short" and current_price_for_tp <= std_tp: tp_hit = True
+
+                if tp_hit:
+                    logging.info(f"Standard TP HIT for {sim_pos_data['symbol']} at {std_tp:.5f} within 1m candle {current_time_utc}")
+                    # _finalize_simulated_exit modifies sim_pos_data to inactive
+                    return [self._finalize_simulated_exit(sim_pos_data, std_tp, current_time_utc, "standard_take_profit")]
+            return []
+
+        triggered_tp_exits = []
+        pos_type = sim_pos_data["position_type"]
+        entry_price = sim_pos_data["entry_price"]
+
+        for level_idx in range(len(sim_pos_data.get("take_profit_levels",[]))):
+            if not sim_pos_data["is_active"]: break 
+            
+            level_flag = f"reached_{['first', 'second', 'third'][level_idx]}" if level_idx < 3 else f"reached_{level_idx+1}"
+            if sim_pos_data.get(level_flag, False): continue
+
+            # Ensure TP levels and quantities lists are long enough
+            if level_idx >= len(sim_pos_data.get("take_profit_levels",[])) or level_idx >= len(sim_pos_data.get("take_profit_quantities",[])):
+                logging.warning(f"TP level/quantity index out of bounds for {sim_pos_data['symbol']}. Level idx: {level_idx}")
+                break 
+
+            tp_price_level = sim_pos_data["take_profit_levels"][level_idx]
+            qty_to_exit_at_level = sim_pos_data["take_profit_quantities"][level_idx]
+            if qty_to_exit_at_level <= 1e-9 : continue
+
+            tp_hit = False
+            if pos_type == "long" and current_price_for_tp >= tp_price_level: tp_hit = True
+            elif pos_type == "short" and current_price_for_tp <= tp_price_level: tp_hit = True
+
+            if tp_hit:
+                actual_exit_qty = min(qty_to_exit_at_level, sim_pos_data["remaining_quantity"])
+                if actual_exit_qty <= 1e-9: continue
+
+                reason = f"{base_reason}_{level_idx+1}"
+                logging.info(f"TP Level {level_idx+1} HIT for {sim_pos_data['symbol']} at {tp_price_level:.5f} (1m candle {current_time_utc}). Exiting {actual_exit_qty:.8f}")
+
+                sim_pos_data[level_flag] = True
+                sim_pos_data["remaining_quantity"] -= actual_exit_qty
+                sim_pos_data["current_tp_level"] = level_idx + 1
+                
+                is_full_exit_this_tp = sim_pos_data["remaining_quantity"] <= 1e-9
+                
+                partial_exit_detail = {
+                    "symbol": sim_pos_data["symbol"], "position_id": sim_pos_data.get("position_id"),
+                    "exit_price": tp_price_level, "exit_time": current_time_utc, "exit_reason": reason,
+                    "exit_quantity": actual_exit_qty, "remaining_quantity": sim_pos_data["remaining_quantity"],
+                    "full_exit": is_full_exit_this_tp, "exit_level": level_idx + 1,
+                    "breakeven_activated": sim_pos_data.get("breakeven_activated", False)
+                }
+                triggered_tp_exits.append(partial_exit_detail)
+                sim_pos_data.get("partial_exits", []).append(copy.deepcopy(partial_exit_detail)) # Add to internal list as well
+
+                if is_full_exit_this_tp:
+                    sim_pos_data["is_active"] = False
+                    sim_pos_data["exit_price"] = tp_price_level
+                    sim_pos_data["exit_time"] = current_time_utc
+                    sim_pos_data["exit_reason"] = reason
+                    break 
+
+                if level_idx == 1 and self.enable_breakeven and not sim_pos_data.get("breakeven_activated", False):
+                    be_buffer_pct = getattr(Z_config, 'breakeven_buffer_pct', 0.05) / 100 
+                    be_level = entry_price * (1 + be_buffer_pct) if pos_type == "long" else entry_price * (1 - be_buffer_pct)
+                    if (pos_type == "long" and be_level > sim_pos_data["current_stop"]) or \
+                       (pos_type == "short" and be_level < sim_pos_data["current_stop"]):
+                        logger.info(f"Breakeven for {sim_pos_data['symbol']} activated at {be_level:.5f} (stop moved from {sim_pos_data['current_stop']:.5f}) after TP{level_idx+1}")
+                        sim_pos_data["current_stop"] = be_level
+                        sim_pos_data["breakeven_activated"] = True
+                        sim_pos_data["breakeven_level"] = be_level
+                
+                is_final_configured_tp_level = (level_idx == len(sim_pos_data.get("take_profit_levels",[])) - 1)
+                if level_idx == 1 and self.enable_trailing_take_profit and not is_final_configured_tp_level: # After TP2, if not the last fixed TP
+                    if not sim_pos_data.get("tp_trailing_activated", False):
+                        sim_pos_data["tp_trailing_activated"] = True
+                        sim_pos_data["best_tp_price"] = current_price_for_tp 
+                        logger.info(f"Trailing Take Profit (for subsequent levels) for {sim_pos_data['symbol']} activated. Start best_tp_price: {sim_pos_data['best_tp_price']:.5f}")
+        
+        # Trailing Take Profit logic for the very last portion, if activated and position still active
+        if sim_pos_data.get("tp_trailing_activated", False) and sim_pos_data["is_active"]:
+            # This usually applies if all fixed TPs are hit OR if the last TP itself is a trailing one.
+            # Let's assume it's for the remainder after all fixed TPs defined by take_profit_levels are processed.
+            if sim_pos_data["current_tp_level"] >= len(sim_pos_data.get("take_profit_levels",[])):
+                best_tp_price_updated_final_trail = False
+                if pos_type == "long":
+                    if current_price_for_tp > sim_pos_data["best_tp_price"]:
+                        sim_pos_data["best_tp_price"] = current_price_for_tp; best_tp_price_updated_final_trail = True
+                else: 
+                    if current_price_for_tp < sim_pos_data["best_tp_price"]:
+                        sim_pos_data["best_tp_price"] = current_price_for_tp; best_tp_price_updated_final_trail = True
+                
+                # Check if trailing TP stop is hit (always check once activated for this stage)
+                trailing_tp_stop_level = 0.0
+                trailing_tp_hit_final = False
+                if pos_type == "long":
+                    trailing_tp_stop_level = sim_pos_data["best_tp_price"] * (1 - self.third_level_trailing_distance / 100)
+                    if current_price_for_tp <= trailing_tp_stop_level: trailing_tp_hit_final = True
+                else: 
+                    trailing_tp_stop_level = sim_pos_data["best_tp_price"] * (1 + self.third_level_trailing_distance / 100)
+                    if current_price_for_tp >= trailing_tp_stop_level: trailing_tp_hit_final = True
+
+                if trailing_tp_hit_final:
+                    logger.info(f"Trailing TP (final portion) STOP HIT for {sim_pos_data['symbol']} at {trailing_tp_stop_level:.5f}")
+                    exit_event = self._finalize_simulated_exit(sim_pos_data, trailing_tp_stop_level, current_time_utc, f"{base_reason}_trailing_final")
+                    triggered_tp_exits.append(exit_event)
+        return triggered_tp_exits
+    
     def _resolve_sl_tp_priority(self, symbol, sl_price, tp_price, current_time, position_type):
         """
         Resolves SL/TP priority using finer time intervals if available.
@@ -303,782 +935,6 @@ class BacktestPositionTracker:
         except Exception as e:
             logger.error(f"Error during SL/TP priority resolution fetch/processing for {symbol}: {e}", exc_info=True)
             return "tp", original_current_time # Return original time on error
-
-
-
-    def update_position(self, symbol, current_price, current_time):
-         """
-         Update position state based on current price, handling SL, TP (standard or advanced).
-         *** NOTE: For Advanced mode, this function is largely superseded by _simulate_intra_candle_advanced_exits ***
-         *** It remains primarily for STANDARD SL/TP checks based on the overall candle High/Low. ***
-
-         current_price here represents the price point relevant for the check (e.g., low for long SL, high for long TP).
-         Returns exit details dictionary if an exit occurred, otherwise None.
-         """
-         if symbol not in self.positions or not self.positions[symbol].get("is_active", False):
-             return None # No active position
-
-         position = self.positions[symbol]
-         position_type = position["position_type"]
-
-         # Ensure current_time is timezone-aware UTC
-         if current_time.tzinfo is None:
-             current_time = current_time.replace(tzinfo=timezone.utc)
-         else:
-             current_time = current_time.astimezone(timezone.utc)
-
-
-         # --- Standard SL/TP Logic ---
-         if self.use_standard_sl_tp:
-             sl_price = position.get("standard_sl")
-             tp_price = position.get("standard_tp")
-
-             if sl_price is None or tp_price is None:
-                 logging.error(f"Standard SL/TP prices not found for active position {symbol}. Cannot update.")
-                 return None # Cannot proceed without prices
-
-             sl_triggered = False
-             tp_triggered = False
-
-             # IMPORTANT: current_price passed here is typically the High or Low of the WHOLE candle
-             if position_type == "long":
-                 # Check SL against the LOW price passed in
-                 if current_price <= sl_price: sl_triggered = True
-                 # Check TP against the HIGH price passed in (requires separate call)
-                 # This basic check doesn't handle simultaneous hits well, relies on _resolve_sl_tp_priority
-                 # Let's assume the caller passes the relevant price (low for SL check, high for TP check)
-                 if current_price >= tp_price: tp_triggered = True # This check might be inaccurate depending on what price is passed
-             else: # short
-                 # Check SL against the HIGH price passed in
-                 if current_price >= sl_price: sl_triggered = True
-                 # Check TP against the LOW price passed in
-                 if current_price <= tp_price: tp_triggered = True # This check might be inaccurate
-
-             # The standard logic handles one trigger at a time based on the single price point passed.
-             # Conflict resolution happens externally (Phase 1) or by sequence of calls.
-             if sl_triggered:
-                 # Use _close_position for consistency
-                 logging.debug(f"Standard SL triggered for {symbol} via update_position (Price: {current_price}, SL: {sl_price})")
-                 return self._close_position(symbol, sl_price, current_time, "standard_stop_loss")
-             elif tp_triggered:
-                 logging.debug(f"Standard TP triggered for {symbol} via update_position (Price: {current_price}, TP: {tp_price})")
-                 return self._close_position(symbol, tp_price, current_time, "standard_take_profit")
-             else:
-                 return None # No standard exit triggered by this specific price check
-
-         # --- Advanced Trailing/Multi-TP Logic ---
-         else:
-             # --- THIS PATH SHOULD NOT BE NORMALLY REACHED IF SIMULATION IS USED ---
-             # If this is called in advanced mode, it implies simulation wasn't used or failed.
-             # Log a warning and potentially fall back to the old (less accurate) method,
-             # or simply return None as simulation should handle it.
-             logger.warning(f"update_position called in Advanced Mode for {symbol}. This should be handled by simulation. Skipping.")
-             return None
-
-
-    # --- Keep other methods like _calculate_tp_levels, _calculate_tp_quantities, ---
-    # --- _update_trailing_stop, _update_take_profit, _close_position, get_position etc. ---
-    # --- Ensure they are consistent with the logic above. ---
-
-    def _calculate_tp_levels(self, entry_price, position_type):
-        """Calculate take profit price levels based on config percentages."""
-        tp_levels = []
-        for level_pct in self.take_profit_levels:
-            if position_type == "long":
-                tp_price = entry_price * (1 + level_pct / 100)
-            else: # short
-                tp_price = entry_price * (1 - level_pct / 100)
-            tp_levels.append(tp_price)
-        return tp_levels
-
-    def _calculate_tp_quantities(self, total_quantity):
-        """Calculate quantities for each take profit level based on config percentages."""
-        tp_quantities = []
-        remaining_qty = total_quantity
-        total_pct = sum(self.take_profit_size_percentages)
-
-        # Normalize percentages if they don't sum to 100
-        normalized_percentages = self.take_profit_size_percentages
-        if not np.isclose(total_pct, 100):
-            logging.warning(f"TP size percentages ({self.take_profit_size_percentages}) do not sum to 100. Normalizing.")
-            if total_pct > 0:
-                 normalized_percentages = [(p / total_pct) * 100 for p in self.take_profit_size_percentages]
-            else:
-                 # Avoid division by zero if sum is 0
-                 equal_pct = 100 / len(self.take_profit_size_percentages) if len(self.take_profit_size_percentages) > 0 else 0
-                 normalized_percentages = [equal_pct] * len(self.take_profit_size_percentages)
-
-
-        for i, pct in enumerate(normalized_percentages):
-             # Avoid floating point errors by calculating precisely
-             if i == len(normalized_percentages) - 1:
-                 # Last level gets the exact remaining quantity
-                 level_qty = remaining_qty
-             else:
-                 level_qty = total_quantity * (pct / 100)
-
-             # Ensure quantity does not exceed remaining
-             level_qty = min(level_qty, remaining_qty)
-             tp_quantities.append(level_qty)
-             remaining_qty -= level_qty
-             # Break if remaining quantity is zero or negligible
-             if remaining_qty < 1e-9: # Use a small threshold for floating point comparison
-                 # Assign 0 to remaining levels if any
-                 tp_quantities.extend([0.0] * (len(normalized_percentages) - (i + 1)))
-                 break
-
-        # Final check if quantities sum up correctly
-        if not np.isclose(sum(tp_quantities), total_quantity):
-             logging.warning(f"Calculated TP quantities {sum(tp_quantities)} do not sum to total {total_quantity}. Last element adjusted.")
-             # Adjust last element slightly if needed due to floating point math
-             if tp_quantities:
-                 tp_quantities[-1] = total_quantity - sum(tp_quantities[:-1])
-
-
-        return tp_quantities
-
-
-    def _update_trailing_stop(self, symbol, current_price):
-        """Update trailing stop logic. current_price is the relevant high/low."""
-        position = self.positions[symbol]
-        position_type = position["position_type"]
-        entry_price = position["entry_price"]
-
-        # Update best price observed
-        if position_type == "long":
-            if current_price > position["best_price"]:
-                position["best_price"] = current_price
-        else: # short
-            if current_price < position["best_price"]:
-                position["best_price"] = current_price
-
-        # Check if trailing activation threshold is met
-        if not position["trailing_activated"]:
-            price_movement_pct = 0
-            if position_type == "long":
-                if entry_price > 0: price_movement_pct = ((position["best_price"] - entry_price) / entry_price) * 100
-            else: # short
-                if entry_price > 0: price_movement_pct = ((entry_price - position["best_price"]) / entry_price) * 100
-
-            if price_movement_pct >= self.trailing_activation_threshold:
-                position["trailing_activated"] = True
-                # logging.info(f"Trailing stop ACTIVATED for {symbol} at price {current_price}")
-
-        # Adjust stop loss if trailing is active
-        if position["trailing_activated"]:
-            new_stop = position["current_stop"] # Start with current stop
-            if position_type == "long":
-                proposed_stop = position["best_price"] * (1 - self.trailing_distance / 100)
-                # Only move stop up
-                new_stop = max(position["current_stop"], proposed_stop)
-            else: # short
-                proposed_stop = position["best_price"] * (1 + self.trailing_distance / 100)
-                # Only move stop down
-                new_stop = min(position["current_stop"], proposed_stop)
-
-            if new_stop != position["current_stop"]:
-                 # logging.info(f"Trailing stop UPDATED for {symbol} from {position['current_stop']:.8f} to {new_stop:.8f}")
-                 position["current_stop"] = new_stop
-
-
-        # Check if current stop loss is triggered
-        stop_triggered = False
-        if position_type == "long":
-            if current_price <= position["current_stop"]: stop_triggered = True
-        else: # short
-            if current_price >= position["current_stop"]: stop_triggered = True
-
-        if stop_triggered:
-            reason = "breakeven_stop" if position.get("breakeven_activated", False) else "trailing_stop"
-            # logging.info(f"STOP TRIGGERED for {symbol} ({reason}) at price {current_price} (Stop Level: {position['current_stop']})")
-            return True, reason
-
-        return False, None
-
-
-    def _update_take_profit(self, symbol, current_price, current_time):
-        """Update multi-level take profit logic. current_price is the relevant high/low."""
-        position = self.positions[symbol]
-        position_type = position["position_type"]
-        entry_price = position["entry_price"]
-        tp_levels = position["take_profit_levels"]
-        position_id = position.get("position_id", f"{symbol}_{position['entry_time']}")
-
-        # Check TP levels sequentially
-        for level_index in range(len(tp_levels)):
-             level_reached_flag = f"reached_{['first', 'second', 'third'][level_index]}" # e.g., "reached_first"
-             tp_price = tp_levels[level_index]
-             exit_qty = position["take_profit_quantities"][level_index]
-             exit_reason = f"take_profit_{level_index + 1}"
-
-             # Skip if this level was already reached or quantity for this level is zero
-             if position.get(level_reached_flag, False) or exit_qty <= 1e-9:
-                 continue
-
-             # Check if TP level is hit
-             tp_hit = False
-             if position_type == "long":
-                 if current_price >= tp_price: tp_hit = True
-             else: # short
-                 if current_price <= tp_price: tp_hit = True
-
-             if tp_hit:
-                 # Ensure we don't exit more than remaining quantity (important for last level)
-                 actual_exit_qty = min(exit_qty, position["remaining_quantity"])
-                 if actual_exit_qty <= 1e-9: # Skip if remaining is negligible
-                     continue
-
-                 # Record partial/final exit
-                 exit_details = {
-                     "exit_time": current_time,
-                     "exit_price": tp_price, # Exit at the TP level price
-                     "exit_quantity": actual_exit_qty,
-                     "exit_level": level_index + 1,
-                     "exit_reason": exit_reason,
-                     "position_id": position_id
-                 }
-                 position["partial_exits"].append(exit_details)
-
-                 # Update position state
-                 position[level_reached_flag] = True
-                 position["remaining_quantity"] -= actual_exit_qty
-                 position["current_tp_level"] = level_index + 1
-
-                 # Check if this is the final exit for the position
-                 is_final_tp_level = (level_index == len(tp_levels) - 1)
-                 is_full_exit = (position["remaining_quantity"] <= 1e-9) or is_final_tp_level # Close if negligible qty left or last TP
-
-                 # logger.info(f"TAKE PROFIT {level_index + 1}/{len(tp_levels)} HIT for {symbol} (ID: {position_id}) at {tp_price}")
-                 # logger.info(f"  Exited Quantity: {actual_exit_qty:.8f}, Remaining: {position['remaining_quantity']:.8f}")
-
-
-                 # Handle post-TP actions (Breakeven, Trailing TP activation)
-                 if level_index == 1: # After TP2 is hit
-                     # Activate Breakeven Stop
-                     if self.enable_breakeven and not position.get("breakeven_activated", False):
-                         breakeven_level = entry_price # Simple breakeven at entry
-                         # Add small buffer to cover fees if desired (e.g., 0.05%)
-                         buffer = 0.0005
-                         if position_type == "long":
-                             breakeven_level = entry_price * (1 + buffer)
-                             if breakeven_level > position["current_stop"]: # Only move stop up
-                                 position["current_stop"] = breakeven_level
-                                 position["breakeven_activated"] = True
-                                 position["breakeven_level"] = breakeven_level
-                                 # logger.info(f"Breakeven stop activated and moved to {breakeven_level:.8f} for {symbol}")
-                         else: # short
-                             breakeven_level = entry_price * (1 - buffer)
-                             if breakeven_level < position["current_stop"]: # Only move stop down
-                                 position["current_stop"] = breakeven_level
-                                 position["breakeven_activated"] = True
-                                 position["breakeven_level"] = breakeven_level
-                                 # logger.info(f"Breakeven stop activated and moved to {breakeven_level:.8f} for {symbol}")
-
-
-                     # Activate Trailing Take Profit for the last portion
-                     if self.enable_trailing_take_profit and not is_final_tp_level: # Check if there's a next level
-                          if not position.get("tp_trailing_activated", False):
-                               position["tp_trailing_activated"] = True
-                               position["best_tp_price"] = current_price # Start trailing from current price
-                               # logger.info(f"Trailing Take Profit activated for {symbol} (level 3 onwards) starting from {current_price}")
-
-
-                 # Handle Trailing Take Profit for the last level
-                 if is_final_tp_level and position.get("tp_trailing_activated", False):
-                     # Update best TP price
-                     if position_type == "long":
-                         if current_price > position["best_tp_price"]:
-                             position["best_tp_price"] = current_price
-                         # Calculate trailing TP stop
-                         trailing_tp_stop = position["best_tp_price"] * (1 - self.third_level_trailing_distance / 100)
-                         if current_price <= trailing_tp_stop:
-                             # Trailing TP stop hit, close remaining position
-                             final_exit_qty = position["remaining_quantity"]
-                             if final_exit_qty > 1e-9:
-                                  exit_details_trailing = {
-                                      "exit_time": current_time,
-                                      "exit_price": trailing_tp_stop, # Exit at the stop level
-                                      "exit_quantity": final_exit_qty,
-                                      "exit_level": 3,
-                                      "exit_reason": "take_profit_3_trailing",
-                                      "position_id": position_id
-                                  }
-                                  position["partial_exits"].append(exit_details_trailing)
-                                  position["remaining_quantity"] = 0
-                                  is_full_exit = True
-                                  exit_reason = "take_profit_3_trailing"
-                                  # logger.info(f"Trailing TP (L3) STOP HIT for {symbol} at {trailing_tp_stop:.8f}. Closed remaining {final_exit_qty:.8f}.")
-
-                     else: # short
-                         if current_price < position["best_tp_price"]:
-                              position["best_tp_price"] = current_price
-                         # Calculate trailing TP stop
-                         trailing_tp_stop = position["best_tp_price"] * (1 + self.third_level_trailing_distance / 100)
-                         if current_price >= trailing_tp_stop:
-                             # Trailing TP stop hit
-                             final_exit_qty = position["remaining_quantity"]
-                             if final_exit_qty > 1e-9:
-                                 exit_details_trailing = {
-                                     "exit_time": current_time,
-                                     "exit_price": trailing_tp_stop, # Exit at the stop level
-                                     "exit_quantity": final_exit_qty,
-                                     "exit_level": 3,
-                                     "exit_reason": "take_profit_3_trailing",
-                                     "position_id": position_id
-                                 }
-                                 position["partial_exits"].append(exit_details_trailing)
-                                 position["remaining_quantity"] = 0
-                                 is_full_exit = True
-                                 exit_reason = "take_profit_3_trailing"
-                                 # logger.info(f"Trailing TP (L3) STOP HIT for {symbol} at {trailing_tp_stop:.8f}. Closed remaining {final_exit_qty:.8f}.")
-
-
-                 # Finalize position if it's fully closed
-                 if is_full_exit:
-                     position["is_active"] = False
-                     position["exit_price"] = exit_details["exit_price"] # Use the last exit price
-                     position["exit_time"] = exit_details["exit_time"]
-                     position["exit_reason"] = exit_reason # Use the reason from the last exit step
-                     # logger.info(f"POSITION CLOSED for {symbol} (ID: {position_id}) after final TP ({exit_reason}).")
-
-
-                 # Return the details of the exit that just occurred
-                 return {
-                     "symbol": symbol,
-                     "position_id": position_id,
-                     "exit_price": exit_details["exit_price"],
-                     "exit_time": exit_details["exit_time"],
-                     "exit_reason": exit_details["exit_reason"],
-                     "exit_quantity": exit_details["exit_quantity"],
-                     "exit_level": exit_details["exit_level"],
-                     "remaining_quantity": position["remaining_quantity"],
-                     "full_exit": is_full_exit,
-                     "breakeven_activated": position.get("breakeven_activated", False)
-                 }
-
-             # If TP not hit for this level, continue to check next level (or exit loop)
-
-
-        # If Trailing TP is active but the fixed TP3 level wasn't hit, still check the trailing stop
-        if position.get("tp_trailing_activated", False) and not position.get("reached_third", False) and position.get("remaining_quantity", 0) > 0:
-             if position_type == "long":
-                 if current_price > position["best_tp_price"]: position["best_tp_price"] = current_price
-                 trailing_tp_stop = position["best_tp_price"] * (1 - self.third_level_trailing_distance / 100)
-                 if current_price <= trailing_tp_stop:
-                      final_exit_qty = position["remaining_quantity"]
-                      if final_exit_qty > 1e-9:
-                          exit_details_trailing = {
-                              "exit_time": current_time, "exit_price": trailing_tp_stop, "exit_quantity": final_exit_qty,
-                              "exit_level": 3, "exit_reason": "take_profit_3_trailing", "position_id": position_id
-                          }
-                          position["partial_exits"].append(exit_details_trailing)
-                          position["remaining_quantity"] = 0
-                          position["is_active"] = False
-                          position["exit_price"] = trailing_tp_stop
-                          position["exit_time"] = current_time
-                          position["exit_reason"] = "take_profit_3_trailing"
-                          # logger.info(f"Trailing TP (L3) STOP HIT (standalone check) for {symbol} at {trailing_tp_stop:.8f}.")
-                          return { # Return the full exit details
-                               "symbol": symbol, "position_id": position_id, "exit_price": trailing_tp_stop, "exit_time": current_time,
-                               "exit_reason": "take_profit_3_trailing", "exit_quantity": final_exit_qty, "exit_level": 3,
-                               "remaining_quantity": 0, "full_exit": True, "breakeven_activated": position.get("breakeven_activated", False)
-                           }
-             else: # short
-                 if current_price < position["best_tp_price"]: position["best_tp_price"] = current_price
-                 trailing_tp_stop = position["best_tp_price"] * (1 + self.third_level_trailing_distance / 100)
-                 if current_price >= trailing_tp_stop:
-                     final_exit_qty = position["remaining_quantity"]
-                     if final_exit_qty > 1e-9:
-                         exit_details_trailing = {
-                             "exit_time": current_time, "exit_price": trailing_tp_stop, "exit_quantity": final_exit_qty,
-                             "exit_level": 3, "exit_reason": "take_profit_3_trailing", "position_id": position_id
-                         }
-                         position["partial_exits"].append(exit_details_trailing)
-                         position["remaining_quantity"] = 0
-                         position["is_active"] = False
-                         position["exit_price"] = trailing_tp_stop
-                         position["exit_time"] = current_time
-                         position["exit_reason"] = "take_profit_3_trailing"
-                         # logger.info(f"Trailing TP (L3) STOP HIT (standalone check) for {symbol} at {trailing_tp_stop:.8f}.")
-                         return { # Return the full exit details
-                               "symbol": symbol, "position_id": position_id, "exit_price": trailing_tp_stop, "exit_time": current_time,
-                               "exit_reason": "take_profit_3_trailing", "exit_quantity": final_exit_qty, "exit_level": 3,
-                               "remaining_quantity": 0, "full_exit": True, "breakeven_activated": position.get("breakeven_activated", False)
-                           }
-
-        return None # No TP hit in this update
-
-
-    def _close_position(self, symbol, exit_price, exit_time, exit_reason):
-        """Internal helper to mark a position as closed and return exit details."""
-        if symbol not in self.positions or not self.positions[symbol]["is_active"]:
-             logging.warning(f"Attempted to close already inactive or non-existent position for {symbol}")
-             return None
-
-        position = self.positions[symbol]
-
-        # Ensure exit_time is timezone-aware UTC
-        if exit_time.tzinfo is None:
-             exit_time = exit_time.replace(tzinfo=timezone.utc)
-        else:
-             exit_time = exit_time.astimezone(timezone.utc)
-
-
-        exit_quantity = position["remaining_quantity"] # Close the remaining quantity
-
-        # Mark as inactive and record exit details
-        position["is_active"] = False
-        position["exit_price"] = exit_price
-        position["exit_time"] = exit_time
-        position["exit_reason"] = exit_reason
-        position["remaining_quantity"] = 0 # Set remaining to zero
-
-        # Add to partial exits list for consistency in reporting if needed? Or just return final state.
-        # Let's just return the final state clearly marked as full_exit=True
-
-        exit_result = {
-            "symbol": symbol,
-            "position_id": position.get("position_id"),
-            "exit_price": exit_price,
-            "exit_time": exit_time,
-            "exit_reason": exit_reason,
-            "exit_quantity": exit_quantity, # The quantity that was exited now
-            "remaining_quantity": 0,
-            "full_exit": True, # Mark this as closing the entire remaining position
-            "breakeven_activated": position.get("breakeven_activated", False),
-            "exit_level": position.get("current_tp_level", 0) # Record which TP level was active if relevant
-        }
-
-        # logging.info(f"Closing position {position.get('position_id')} for {symbol} via _close_position. Reason: {exit_reason}")
-        return exit_result
-    
-    def _simulate_intra_candle_advanced_exits(self, symbol, original_candle_data):
-        """
-        Simulates exit logic within a single original interval candle using 1-minute data
-        for advanced position management (multi-TP, trailing SL).
-        MODIFIED to detect and flag 1m SL/TP ambiguity.
-
-        Args:
-            symbol (str): Trading symbol.
-            original_candle_data (pd.Series): Data for the original interval candle (e.g., 15m)
-                                            Requires 'open', 'high', 'low', 'close', and the timestamp index.
-
-        Returns:
-            Tuple[List[Dict], Dict]:
-                - List of exit detail dictionaries triggered within this candle.
-                - The final state of the position *after* simulating this candle.
-                Returns the *original* position state if no 1m data is found or simulation fails.
-        """
-        if symbol not in self.positions or not self.positions[symbol].get("is_active", False):
-            return [], self.positions.get(symbol) # No active position or not found
-
-        if self.use_standard_sl_tp:
-            # This simulation is only for advanced mode
-            return [], self.positions[symbol]
-
-        original_position_state = self.positions[symbol]
-        # --- Deep Copy Needed ---
-        simulated_position = copy.deepcopy(original_position_state)
-
-        original_candle_time = original_candle_data.name # This is the *end* time of the original candle
-
-        # Ensure original_candle_time is timezone-aware UTC
-        if not isinstance(original_candle_time, pd.Timestamp):
-            logger.error(f"Invalid original_candle_time type: {type(original_candle_time)}. Expected Timestamp.")
-            return [], original_position_state
-        if original_candle_time.tzinfo is None:
-            original_candle_time = original_candle_time.tz_localize('UTC')
-        else:
-            original_candle_time = original_candle_time.tz_convert('UTC')
-
-
-        logger.info(f"--- Intra-Candle Simulation Start ({symbol}) for candle ending {original_candle_time} ---")
-        logger.debug(f"Initial Sim State: Qty={simulated_position['remaining_quantity']:.8f}, Stop={simulated_position['current_stop']:.8f}, TPs Reached={simulated_position.get('current_tp_level',0)}")
-
-        # --- 1. Fetch 1-Minute Data for the Original Candle's Duration ---
-        original_interval_str = getattr(Z_config, 'interval', '15m') # Get original interval
-        original_interval_minutes = Backtest.parse_interval_to_minutes(original_interval_str)
-        if original_interval_minutes is None:
-            logger.warning(f"Could not parse original interval '{original_interval_str}' for simulation. Aborting simulation.")
-            return [], original_position_state # Return original state on error
-
-        candle_start_time = original_candle_time - timedelta(minutes=original_interval_minutes)
-        candle_end_time = original_candle_time
-        resolution_interval = "1m" # Hardcode to 1m for simulation
-
-        logger.info(f"Fetching {resolution_interval} data for {symbol} from {candle_start_time} to {candle_end_time}")
-
-        try:
-            detailed_data = Backtest.fetch_data(
-                symbol=symbol,
-                interval=resolution_interval,
-                end_time=candle_end_time,
-                start_time_force=candle_start_time
-            )
-
-            if detailed_data is None or detailed_data.empty:
-                logger.warning(f"No detailed ({resolution_interval}) data found for {symbol} during {candle_start_time} to {candle_end_time}. Skipping simulation for this candle.")
-                return [], original_position_state
-
-            detailed_data = detailed_data[(detailed_data.index >= candle_start_time) & (detailed_data.index < candle_end_time)]
-            if detailed_data.empty:
-                logger.warning(f"No detailed ({resolution_interval}) data remains for {symbol} after strict time filtering {candle_start_time} to {candle_end_time}. Skipping simulation.")
-                return [], original_position_state
-
-            logger.info(f"Found {len(detailed_data)} {resolution_interval} candles for simulation.")
-
-        except Exception as e:
-            logger.error(f"Error fetching {resolution_interval} data for simulation: {e}", exc_info=True)
-            return [], original_position_state
-
-        # --- 2. Simulate Step-by-Step through 1-Minute Candles ---
-        exits_found_this_candle = []
-        position_type = simulated_position["position_type"]
-        entry_price = simulated_position["entry_price"]
-        position_id = simulated_position.get("position_id", f"{symbol}_{simulated_position['entry_time']}")
-
-        # --- Simulation Loop ---
-        for candle_1m_time, candle_1m in detailed_data.iterrows():
-            if not simulated_position["is_active"]:
-                logger.debug(f"Sim: Position became inactive at {candle_1m_time}. Stopping simulation for this candle.")
-                break
-
-            if candle_1m_time.tzinfo is None: candle_1m_time_utc = candle_1m_time.tz_localize('UTC')
-            else: candle_1m_time_utc = candle_1m_time.tz_convert('UTC')
-
-            try:
-                candle_low = float(candle_1m['low'])
-                candle_high = float(candle_1m['high'])
-                candle_open = float(candle_1m['open'])
-                candle_close = float(candle_1m['close'])
-            except (ValueError, TypeError) as e:
-                logger.error(f"Sim: Invalid price data in 1m candle at {candle_1m_time_utc}: {e}. Skipping.")
-                continue
-
-            logger.debug(f"--- Simulating 1m candle: {candle_1m_time_utc} O:{candle_open:.5f} H:{candle_high:.5f} L:{candle_low:.5f} C:{candle_close:.5f} ---")
-            logger.debug(f"Sim State Before 1m: Qty={simulated_position['remaining_quantity']:.8f}, Stop={simulated_position['current_stop']:.8f}, TPs={simulated_position.get('current_tp_level',0)}, BEActive={simulated_position.get('breakeven_activated', False)}, TPTrailActive={simulated_position.get('tp_trailing_activated', False)}")
-
-            # --- A. Update Trailing State ---
-            price_for_best_update = candle_high if position_type == "long" else candle_low
-            stop_moved_in_this_step = False
-            best_price_updated = False
-            if position_type == "long":
-                if price_for_best_update > simulated_position["best_price"]:
-                    simulated_position["best_price"] = price_for_best_update
-                    best_price_updated = True
-            else:
-                if price_for_best_update < simulated_position["best_price"]:
-                    simulated_position["best_price"] = price_for_best_update
-                    best_price_updated = True
-
-            if not simulated_position["trailing_activated"]:
-                price_movement_pct = 0
-                if entry_price > 0:
-                    if position_type == "long": price_movement_pct = ((simulated_position["best_price"] - entry_price) / entry_price) * 100
-                    else: price_movement_pct = ((entry_price - simulated_position["best_price"]) / entry_price) * 100
-                if price_movement_pct >= self.trailing_activation_threshold:
-                    simulated_position["trailing_activated"] = True
-                    logger.debug(f"Sim: Trailing activated at 1m candle {candle_1m_time_utc}")
-
-            new_stop = simulated_position["current_stop"]
-            stop_updated_reason = ""
-            if simulated_position.get("breakeven_activated", False):
-                be_level = simulated_position.get("breakeven_level")
-                if be_level is not None:
-                    if position_type == "long" and be_level > new_stop:
-                        new_stop = be_level; stop_updated_reason = "breakeven"
-                    elif position_type == "short" and be_level < new_stop:
-                        new_stop = be_level; stop_updated_reason = "breakeven"
-            if simulated_position["trailing_activated"]:
-                proposed_trailing_stop = 0.0
-                if position_type == "long":
-                    proposed_trailing_stop = simulated_position["best_price"] * (1 - self.trailing_distance / 100)
-                    if proposed_trailing_stop > new_stop:
-                        new_stop = proposed_trailing_stop; stop_updated_reason = "trailing"
-                else:
-                    proposed_trailing_stop = simulated_position["best_price"] * (1 + self.trailing_distance / 100)
-                    if proposed_trailing_stop < new_stop:
-                        new_stop = proposed_trailing_stop; stop_updated_reason = "trailing"
-            if new_stop != simulated_position["current_stop"]:
-                logger.debug(f"Sim: Stop moved from {simulated_position['current_stop']:.8f} to {new_stop:.8f} due to {stop_updated_reason} at {candle_1m_time_utc}")
-                simulated_position["current_stop"] = new_stop
-                stop_moved_in_this_step = True
-            # --- END OF SECTION A ---
-
-            # ***** AMBIGUITY DETECTION START *****
-            sl_condition_met = False
-            current_sim_stop = simulated_position["current_stop"]
-            if position_type == "long":
-                if candle_low <= current_sim_stop: sl_condition_met = True
-            else:
-                if candle_high >= current_sim_stop: sl_condition_met = True
-
-            tp_condition_met = False
-            for level_index in range(len(simulated_position["take_profit_levels"])):
-                level_reached_flag = f"reached_{['first', 'second', 'third'][level_index]}"
-                if not simulated_position.get(level_reached_flag, False) and simulated_position["take_profit_quantities"][level_index] > 1e-9:
-                    tp_price = simulated_position["take_profit_levels"][level_index]
-                    if position_type == "long":
-                        if candle_high >= tp_price: tp_condition_met = True; break
-                    else:
-                        if candle_low <= tp_price: tp_condition_met = True; break
-            if not tp_condition_met and simulated_position.get("tp_trailing_activated", False) and simulated_position["remaining_quantity"] > 1e-9:
-                trailing_tp_stop_level = 0.0
-                if position_type == "long":
-                    trailing_tp_stop_level = simulated_position["best_tp_price"] * (1 - self.third_level_trailing_distance / 100)
-                    if candle_low <= trailing_tp_stop_level: tp_condition_met = True
-                else:
-                    trailing_tp_stop_level = simulated_position["best_tp_price"] * (1 + self.third_level_trailing_distance / 100)
-                    if candle_high >= trailing_tp_stop_level: tp_condition_met = True
-
-            ambiguity_detected = sl_condition_met and tp_condition_met
-            if ambiguity_detected:
-                logging.warning(f"Sim: Ambiguity detected at {candle_1m_time_utc}! SL ({current_sim_stop:.8f}) AND TP conditions met within 1m candle (L:{candle_low:.8f} H:{candle_high:.8f}). Prioritizing SL.")
-            # ***** AMBIGUITY DETECTION END *****
-
-            # --- B. Check Stop Loss Hit ---
-            sl_hit_price = None
-            if position_type == "long":
-                if candle_low <= current_sim_stop: sl_hit_price = current_sim_stop
-            else:
-                if candle_high >= current_sim_stop: sl_hit_price = current_sim_stop
-
-            if sl_hit_price is not None:
-                exit_time = candle_1m_time_utc
-                # ***** EXIT REASON MODIFICATION START *****
-                exit_reason_base = "initial_stop"
-                if simulated_position.get("breakeven_activated", False): exit_reason_base = "breakeven_stop"
-                elif simulated_position.get("trailing_activated", False): exit_reason_base = "trailing_stop"
-                final_exit_reason = f"{exit_reason_base}_unsure" if ambiguity_detected else exit_reason_base
-                # ***** EXIT REASON MODIFICATION END *****
-                exit_quantity = simulated_position["remaining_quantity"]
-                logger.info(f"Sim: STOP HIT ({final_exit_reason}) within candle at {exit_time}. SL Level: {current_sim_stop:.8f}, Trigger Price Approx: {sl_hit_price:.8f} (Low: {candle_low:.8f}, High: {candle_high:.8f})")
-                exit_details = {
-                    "exit_time": exit_time, "exit_price": sl_hit_price, "exit_quantity": exit_quantity,
-                    "exit_level": simulated_position.get("current_tp_level", 0),
-                    "exit_reason": final_exit_reason, # Use final reason
-                    "position_id": position_id, "full_exit": True,
-                    "breakeven_activated": simulated_position.get("breakeven_activated", False),
-                    "remaining_quantity": 0
-                }
-                exits_found_this_candle.append(exit_details)
-                simulated_position["is_active"] = False
-                simulated_position["remaining_quantity"] = 0
-                simulated_position["exit_price"] = sl_hit_price
-                simulated_position["exit_time"] = exit_time
-                simulated_position["exit_reason"] = final_exit_reason # Update state
-                logger.debug(f"Sim: Position closed by SL. Exiting simulation for original candle.")
-                break
-
-            # --- C. Check Take Profit Levels (Only if SL not hit) ---
-            tp_levels = simulated_position["take_profit_levels"]
-            tp_hit_in_this_step = False
-            for level_index in range(len(tp_levels)):
-                if not simulated_position["is_active"]: break
-                level_reached_flag = f"reached_{['first', 'second', 'third'][level_index]}"
-                tp_price = tp_levels[level_index]
-                exit_qty_config = simulated_position["take_profit_quantities"][level_index]
-                if simulated_position.get(level_reached_flag, False) or exit_qty_config <= 1e-9: continue
-                tp_hit = False; tp_hit_price = None
-                if position_type == "long":
-                    if candle_high >= tp_price: tp_hit = True; tp_hit_price = tp_price
-                else:
-                    if candle_low <= tp_price: tp_hit = True; tp_hit_price = tp_price
-                if tp_hit and tp_hit_price is not None:
-                    actual_exit_qty = min(exit_qty_config, simulated_position["remaining_quantity"])
-                    if actual_exit_qty <= 1e-9: continue
-                    exit_time = candle_1m_time_utc
-                    exit_reason = f"take_profit_{level_index + 1}"
-                    is_final_tp_level_config = (level_index == len(tp_levels) - 1)
-                    tp_hit_in_this_step = True
-                    logger.info(f"Sim: TP{level_index + 1} HIT at {exit_time}. TP Level: {tp_price:.8f}, Trigger Price Approx: {tp_hit_price:.8f} (Low: {candle_low:.8f}, High: {candle_high:.8f})")
-                    logger.info(f"Sim: Exiting Qty: {actual_exit_qty:.8f} / Remaining Before: {simulated_position['remaining_quantity']:.8f}")
-                    simulated_position[level_reached_flag] = True
-                    simulated_position["remaining_quantity"] -= actual_exit_qty
-                    simulated_position["current_tp_level"] = level_index + 1
-                    is_full_exit = (simulated_position["remaining_quantity"] <= 1e-9)
-                    logger.info(f"Sim: Remaining Qty After TP{level_index + 1}: {simulated_position['remaining_quantity']:.8f}")
-                    exit_details = {
-                        "exit_time": exit_time, "exit_price": tp_hit_price, "exit_quantity": actual_exit_qty,
-                        "exit_level": level_index + 1, "exit_reason": exit_reason, "position_id": position_id,
-                        "full_exit": is_full_exit, "breakeven_activated": simulated_position.get("breakeven_activated", False),
-                        "remaining_quantity": simulated_position["remaining_quantity"]
-                    }
-                    exits_found_this_candle.append(exit_details)
-                    simulated_position['partial_exits'].append(copy.deepcopy(exit_details))
-                    if level_index == 1 and self.enable_breakeven and not simulated_position.get("breakeven_activated", False):
-                        breakeven_level_calc = entry_price
-                        buffer = getattr(Z_config, 'breakeven_buffer_pct', 0.05) / 100
-                        if position_type == "long":
-                            breakeven_level_calc = entry_price * (1 + buffer)
-                            if breakeven_level_calc > simulated_position["current_stop"]:
-                                logger.debug(f"Sim: Activating Breakeven. Moving Stop from {simulated_position['current_stop']:.8f} to {breakeven_level_calc:.8f}")
-                                simulated_position["current_stop"] = breakeven_level_calc; simulated_position["breakeven_activated"] = True; simulated_position["breakeven_level"] = breakeven_level_calc; stop_moved_in_this_step = True
-                        else:
-                            breakeven_level_calc = entry_price * (1 - buffer)
-                            if breakeven_level_calc < simulated_position["current_stop"]:
-                                logger.debug(f"Sim: Activating Breakeven. Moving Stop from {simulated_position['current_stop']:.8f} to {breakeven_level_calc:.8f}")
-                                simulated_position["current_stop"] = breakeven_level_calc; simulated_position["breakeven_activated"] = True; simulated_position["breakeven_level"] = breakeven_level_calc; stop_moved_in_this_step = True
-                    if level_index == 1 and self.enable_trailing_take_profit and not is_final_tp_level_config:
-                        if not simulated_position.get("tp_trailing_activated", False):
-                            simulated_position["tp_trailing_activated"] = True
-                            simulated_position["best_tp_price"] = candle_high if position_type == "long" else candle_low
-                            logger.debug(f"Sim: Trailing TP activated at {candle_1m_time_utc}, starting best TP price {simulated_position['best_tp_price']:.8f}")
-                    if is_full_exit:
-                        simulated_position["is_active"] = False; simulated_position["exit_price"] = tp_hit_price
-                        simulated_position["exit_time"] = exit_time; simulated_position["exit_reason"] = exit_reason
-                        logger.debug(f"Sim: Position closed by final TP{level_index + 1}.")
-
-            # --- D. Check Trailing Take Profit ---
-            if simulated_position.get("tp_trailing_activated", False) and simulated_position["is_active"]:
-                tp_best_price_updated = False
-                if position_type == "long":
-                    if candle_high > simulated_position["best_tp_price"]: simulated_position["best_tp_price"] = candle_high; tp_best_price_updated = True
-                else:
-                    if candle_low < simulated_position["best_tp_price"]: simulated_position["best_tp_price"] = candle_low; tp_best_price_updated = True
-                trailing_tp_stop_price = None; trailing_tp_stop_hit = False; trailing_tp_stop_level = 0.0
-                if position_type == "long":
-                    trailing_tp_stop_level = simulated_position["best_tp_price"] * (1 - self.third_level_trailing_distance / 100)
-                    if candle_low <= trailing_tp_stop_level: trailing_tp_stop_hit = True; trailing_tp_stop_price = trailing_tp_stop_level
-                else:
-                    trailing_tp_stop_level = simulated_position["best_tp_price"] * (1 + self.third_level_trailing_distance / 100)
-                    if candle_high >= trailing_tp_stop_level: trailing_tp_stop_hit = True; trailing_tp_stop_price = trailing_tp_stop_level
-                if trailing_tp_stop_hit and trailing_tp_stop_price is not None:
-                    exit_time = candle_1m_time_utc; exit_reason = "take_profit_3_trailing"; exit_quantity = simulated_position["remaining_quantity"]
-                    logger.info(f"Sim: Trailing TP Stop HIT at {exit_time}. Stop Level: {trailing_tp_stop_level:.8f}, Trigger Price Approx: {trailing_tp_stop_price:.8f} (Low: {candle_low:.8f}, High: {candle_high:.8f})")
-                    exit_details = {
-                        "exit_time": exit_time, "exit_price": trailing_tp_stop_price, "exit_quantity": exit_quantity,
-                        "exit_level": 3, "exit_reason": exit_reason, "position_id": position_id, "full_exit": True,
-                        "breakeven_activated": simulated_position.get("breakeven_activated", False), "remaining_quantity": 0
-                    }
-                    exits_found_this_candle.append(exit_details)
-                    simulated_position["is_active"] = False; simulated_position["remaining_quantity"] = 0
-                    simulated_position["exit_price"] = trailing_tp_stop_price; simulated_position["exit_time"] = exit_time
-                    simulated_position["exit_reason"] = exit_reason
-                    logger.debug(f"Sim: Position closed by Trailing TP Stop. Exiting simulation for original candle.")
-                    break
-            # --- End of 1m candle simulation ---
-
-        # --- 3. Return Results ---
-        if not exits_found_this_candle:
-            logger.info(f"--- Intra-Candle Simulation End ({symbol}) for candle ending {original_candle_time}: No SL/TP hits found in 1m data. ---")
-        else:
-            logger.info(f"--- Intra-Candle Simulation End ({symbol}) for candle ending {original_candle_time}: Found {len(exits_found_this_candle)} exit events. ---")
-            logger.debug(f"Final Sim State: Active={simulated_position['is_active']}, Qty={simulated_position['remaining_quantity']:.8f}, Stop={simulated_position['current_stop']:.8f}, Reason={simulated_position.get('exit_reason', 'N/A')}")
-
-        return exits_found_this_candle, simulated_position
-
-
-    def get_position(self, symbol):
-        """Get current position data for a symbol."""
-        return self.positions.get(symbol)
-
-    def get_all_positions(self):
-        """Get all currently active positions."""
-        return {k: v for k, v in self.positions.items() if v.get("is_active", False)}
-
-    # get_position_summary remains the same
-
 
 # --- Global Helper Function ---
 def _calculate_pnl(position_type, entry_price, exit_price, quantity, commission_rate=None):

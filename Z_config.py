@@ -19,17 +19,15 @@ risk_per_trade = 1  #1 = 100% von 'start_balance_parameter' wird pro trade sovie
 # # BASIERT AUF BASIS VON Einstiegspreis 5min candle anfangspreis. Also ungenau... (noch.)
 # Binance Stop loss & TP benutzen?
 use_standard_sl_tp = False 
-stop_loss_parameter_binance = 0.99 
-take_profit_parameter_binance = 1.0 
+stop_loss_parameter_binance = 0.03 
+take_profit_parameter_binance = 0.03 
 slippage = 0.003 # 0.001 = 0.1% ... Verfehle den Preis aufgrund von market order aber falschen preis bekommen = slippage %. also zu ungusten von mir.
 #
 ### Note! - Wenn man ohne Stop_loss & Take profit backtesten will, sondern nur mit signalen, muss man stop loss und take profit VON BINANCE sehr hoch einstellen. also in diesem Fall MUSS: use_standard_sl_tp = True
 #
 #
-## Workers - Threads #
-max_worker_threads = 12 #
 # Anzahl der gleichzeitig zu verarbeitenden Symbole
-max_concurrent_symbols = 3  # Symbole gleichzeitig laufen lasse
+max_concurrent_symbols = 2  # Symbole gleichzeitig laufen lassen
 #
 ### TRAILING Parameter:      (Wenn 'use_standard_sl_tp' = True werden diese nicht beachtet)
 # # BASIERT AUF BASIS VON Einstiegspreis 5min candle anfangspreis. Also ungenau... (noch.)
@@ -53,7 +51,7 @@ enable_trailing_take_profit = False           # Optimierter Wert (Kein spezielle
 filtering_active = False                      # Wert aus deinem Beispiel <-- Updated from Trial 250
 
 # Observierungsstrategie: (Optimierte Werte eingesetzt)
-beobachten_active = False                     # Wert aus deinem Beispiel (Annahme, da Parameter optimiert wurden) <-- Updated from Trial 250
+beobachten_active = True                     # Wert aus deinem Beispiel (Annahme, da Parameter optimiert wurden) <-- Updated from Trial 250
 seite = 'both'                                # z.B.: " seite = 'plus', 'minus' " - Konzentriert sich für Beobachtungszeiträume nur auf eine seite der % Veränderung <-- Updated from Trial 250
 min_price_change_pct_min = 3.59               # Optimierter Wert <-- Updated from Trial 250
 min_price_change_pct_max = 23.77               # Optimierter Wert (ACHTUNG: Deutlich niedriger als dein Bsp.!) <-- Updated from Trial 250

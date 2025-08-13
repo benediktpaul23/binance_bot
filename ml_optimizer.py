@@ -30,7 +30,7 @@ except ImportError:
 
 
 # --- Globale Einstellungen ---
-NUM_TRIALS = 10000 # Erhöhe die Anzahl für sinnvolles ML
+NUM_TRIALS = 50 # Erhöhe die Anzahl für sinnvolles ML
 ALL_RUNS_CSV = "all_runs_optimization_results_ml.csv" # Changed results filename
 PERFORMANCE_CSV = "total_symbol_performance.csv"
 
@@ -102,7 +102,7 @@ param_space = {
     # Filterung & Beobachtung
     'filtering_active': [False],
     'beobachten_active': [False],
-    'seite': ['long', 'short', 'both'],
+    'seite': ['both'], # 'long', 'short', 
     'min_price_change_pct_min': lambda: round(random.uniform(0.5, 5.0), 2),
     'min_price_change_pct_max': lambda: round(random.uniform(5.1, 50.0), 2),
     'price_change_lookback_minutes': lambda: random.randint(30, 60*12),
@@ -111,8 +111,8 @@ param_space = {
     # Zeitfilter (Beispielhaft auskommentiert)
     #'time_filter_active': [True, False],
     # Positionsrichtung
-    'allow_short': [True], # Behalte bei, falls Z_Config sie braucht
-    'allow_long': [True],  # Behalte bei, falls Z_Config sie braucht
+    'allow_short': [True], 
+    'allow_long': [True], 
     # Vortagesfilter
     'filter_previous_day': [False],
     'previous_day_direction': ['bullish', 'bearish'],

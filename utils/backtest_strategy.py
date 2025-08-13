@@ -1,4 +1,4 @@
-#backtest_strategy.py. Version where it kind of did not work anymore. or lets say it showed me suddenly other solutions: "
+#backtest_strategy.py
 
 import os
 import logging
@@ -12,9 +12,6 @@ from collections import Counter
 from utils.Backtest import append_to_csv
 import math
 
-
-# Globaler Tracker für offene Positionen
-position_tracking = {}  # Format: {symbol: {'position_open': bool, 'observation_ended': bool}}
 
 
 def verify_indicator_calculation(candle_data: pd.Series, symbol="UNKNOWN", label="Verification"):
@@ -724,7 +721,15 @@ def get_multi_timeframe_data(symbol, end_time, initial_start_time, position_trac
 from utils import Backtest
 logger_process_symbol = logging.getLogger(__name__) # Eigener Logger
 
-def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
+def process_symbol(
+    symbol,
+    df,
+    symbol_data,
+    start_time,
+    position_tracking,
+    active_observation_periods_dict, # NEUES ARGUMENT
+    observed_symbols_dict            # NEUES ARGUMENT
+):
     """
     MODIFIED: Verarbeitet Signale und generiert Trades, ignoriert aber Warm-up-Kerzen
     für die eigentliche Trade-Logik (Entry/Exit).
@@ -889,18 +894,13 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
                         candle_low = current_candle.get('low'); candle_high = current_candle.get('high')
                         if pd.notna(candle_low) and pd.notna(candle_high):
                             # Check SL against low
-                            sl_exit = tracker.update_position(symbol, float(candle_low), current_time)
-                            if sl_exit:
-                                logger_process_symbol.info(f"   Standard SL hit for {symbol} based on candle low {candle_low:.8f}")
-                                exit_events_recorded_this_candle.append(sl_exit)
-                                position = tracker.get_position(symbol)
-                            # Check TP against high ONLY IF SL NOT hit
-                            if position and position.get("is_active"):
-                                tp_exit = tracker.update_position(symbol, float(candle_high), current_time)
-                                if tp_exit:
-                                    logger_process_symbol.info(f"   Standard TP hit for {symbol} based on candle high {candle_high:.8f}")
-                                    exit_events_recorded_this_candle.append(tp_exit)
-                                    position = tracker.get_position(symbol)
+                            # Call update_position_standard_mode which handles SL/TP checks
+                            exit_event = tracker.update_position_standard_mode(symbol, float(candle_high), float(candle_low), current_time)
+                            if exit_event:
+                                # The method returns an exit dictionary if SL or TP is hit
+                                logger_process_symbol.info(f"    Standard SL/TP check for {symbol} resulted in exit: {exit_event.get('exit_reason')}")
+                                exit_events_recorded_this_candle.append(exit_event)
+                                position = tracker.get_position(symbol) # Update local status
                         else: logger_process_symbol.error(f"{log_prefix}: Cannot check standard SL/TP for {symbol} at {current_time}: NaN low/high.")
                     else:
                         # Advanced SL/TP (Intra-Candle Simulation)
@@ -1055,9 +1055,17 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
                     else:
                         logger_process_symbol.info(f"{log_prefix}: Resetting GLOBAL state after full exit.")
                         position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
-                        try: update_symbol_position_status(symbol, False)
-                        except NameError: logger_process_symbol.debug("update_symbol_position_status not available.")
-                        except Exception as e_usps: logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
+                        try:
+                            update_symbol_position_status(
+                                symbol=symbol,
+                                has_position=False,
+                                active_observation_periods_dict=active_observation_periods_dict,
+                                observed_symbols_dict=observed_symbols_dict
+                            )
+                        except NameError: 
+                            logger_process_symbol.debug("update_symbol_position_status not available.")
+                        except Exception as e_usps: 
+                            logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
 
                     logger_process_symbol.debug(f"  Global Dict State (After Exit Update): Open={position_tracking[symbol].get('position_open')}, ObsEnded={position_tracking[symbol].get('observation_ended')}")
                     continue # Skip Entry Logic for this candle after exits
@@ -1119,7 +1127,18 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
                         position_tracking[symbol]['position_data'] = tracker.get_position(symbol).copy() # Save current local state globally
                         logger_process_symbol.debug(f"    Global Dict State (After Entry): Open={position_tracking[symbol].get('position_open')}, ObsEnded={position_tracking[symbol].get('observation_ended')}")
 
-                        try: update_symbol_position_status(symbol, True, pos_type)
+                        try: 
+                            update_symbol_position_status(
+                                symbol=symbol, 
+                                has_position=True,
+                                active_observation_periods_dict=active_observation_periods_dict, # Übergebenes dict
+                                observed_symbols_dict=observed_symbols_dict,                     # Übergebenes dict
+                                position_type=pos_type
+                            )
+                        except NameError: 
+                            logger_process_symbol.debug("update_symbol_position_status not available.")
+                        except Exception as e_usps: 
+                            logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
                         except NameError: logger_process_symbol.debug("update_symbol_position_status not available.")
                         except Exception as e_usps: logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
 
@@ -1177,9 +1196,17 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
                                          # Update GLOBAL position_tracking -> Position is closed
                                          logger_process_symbol.info(f"{log_prefix}: Resetting GLOBAL state after immediate Phase 1 exit.")
                                          position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
-                                         try: update_symbol_position_status(symbol, False)
-                                         except NameError: logger_process_symbol.debug("update_symbol_position_status not available.")
-                                         except Exception as e_usps: logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
+                                         try:
+                                             update_symbol_position_status(
+                                                 symbol=symbol,
+                                                 has_position=False,
+                                                 active_observation_periods_dict=active_observation_periods_dict,
+                                                 observed_symbols_dict=observed_symbols_dict
+                                             )
+                                         except NameError: 
+                                             logger_process_symbol.debug("update_symbol_position_status not available.")
+                                         except Exception as e_usps: 
+                                             logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
 
                                          logger_process_symbol.info(f"IMMEDIATE PHASE 1 EXIT recorded for {symbol} (PnL: {pnl_imm:.8f}). Skipping rest of candle.")
                                          continue # Skip rest of this candle's logic
@@ -1270,9 +1297,17 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
                                    # Update GLOBAL state
                                    logger_process_symbol.info(f"{log_prefix}: Resetting GLOBAL state after final backtest_end close.")
                                    position_tracking[symbol] = {'position_open': False, 'observation_ended': False, 'position_data': {}}
-                                   try: update_symbol_position_status(symbol, False)
-                                   except NameError: logger_process_symbol.debug("update_symbol_position_status not available.")
-                                   except Exception as e_usps: logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
+                                   try:
+                                       update_symbol_position_status(
+                                           symbol=symbol,
+                                           has_position=False,
+                                           active_observation_periods_dict=active_observation_periods_dict,
+                                           observed_symbols_dict=observed_symbols_dict
+                                       )
+                                   except NameError: 
+                                       logger_process_symbol.debug("update_symbol_position_status not available.")
+                                   except Exception as e_usps: 
+                                       logger_process_symbol.error(f"Error update_symbol_position_status: {e_usps}")
                                else: logger_process_symbol.error(f"{log_prefix}: Cannot record final trade for {symbol}: Missing data.")
                           else: logger_process_symbol.error(f"{log_prefix}: Failed to close final position {symbol} locally.")
                       else: logger_process_symbol.error(f"{log_prefix}: Cannot close final position {symbol}: Last candle close NaN.")
@@ -1353,67 +1388,6 @@ def process_symbol(symbol, df, symbol_data, start_time, position_tracking):
         return [], {'error': f"Fatal error processing {symbol}: {e}", 'symbol': symbol, 'total_trades': 0}
 
     
-def track_observation_period(symbol, action, period_data=None, has_position=None):
-    """
-    Zentrale Funktion zur Verwaltung von Beobachtungszeiträumen und ihrem Status.
-    
-    Args:
-        symbol: Trading-Symbol
-        action: 'register' (neuen Zeitraum registrieren), 'update' (Status aktualisieren),
-               'check' (Status prüfen), 'remove' (Zeitraum entfernen)
-        period_data: Bei 'register' Dictionary mit start_time, end_time, price_change_pct
-        has_position: Bei 'update' Boolean, ob eine Position geöffnet wurde
-    
-    Returns:
-        Je nach action: bei 'check' dict mit Statusinformationen, bei anderen True/False
-    """
-    global active_observation_periods
-    
-    # Initialisiere für dieses Symbol, falls noch nicht vorhanden
-    if symbol not in active_observation_periods and action != 'remove':
-        active_observation_periods[symbol] = {
-            'active_period': None,
-            'has_position': False
-        }
-    
-    if action == 'register':
-        # Neuen Beobachtungszeitraum registrieren
-        if period_data and isinstance(period_data, dict):
-            active_observation_periods[symbol]['active_period'] = {
-                'start_time': period_data.get('start_time', period_data.get('start')),
-                'end_time': period_data.get('end_time', period_data.get('end')),
-                'price_change_pct': period_data.get('price_change_pct', 0)
-            }
-            logging.info(f"Neuer Beobachtungszeitraum für {symbol} registriert")
-            return True
-        return False
-        
-    elif action == 'update':
-        # Positionsstatus aktualisieren
-        if has_position is not None:
-            active_observation_periods[symbol]['has_position'] = has_position
-            logging.info(f"Positionsstatus für {symbol} aktualisiert: {'Position geöffnet' if has_position else 'Keine Position'}")
-            return True
-        return False
-        
-    elif action == 'check':
-        # Status prüfen und zurückgeben
-        if symbol in active_observation_periods:
-            return active_observation_periods[symbol]
-        return None
-        
-    elif action == 'remove':
-        # Beobachtungszeitraum entfernen
-        if symbol in active_observation_periods:
-            del active_observation_periods[symbol]
-            logging.info(f"Beobachtungszeitraum für {symbol} entfernt")
-            return True
-        return False
-    
-    # Unbekannte Aktion
-    logging.warning(f"Unbekannte Aktion '{action}' für track_observation_period")
-    return False
-
 
 def calculate_max_drawdown(trades, start_balance):
     """

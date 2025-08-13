@@ -1,2 +1,0 @@
-symbol,total_trades,total_exits,win_rate,total_profit,max_drawdown,profit_factor,avg_profit,total_commission,avg_slippage,stop_loss_hits,take_profit_hits,signal_exits,backtest_end_exits,trailing_stop_hits,observation_timeout_exits,partial_exits
-CHILLGUYUSDT,18,18,0.7222222222222222,59.94082134442381,4.029900485889016,12.38717603423533,3.3300456302457673,4.060230809966802,0.7499999999999801,12,0,0,0,7,0,0
