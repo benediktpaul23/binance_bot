@@ -896,58 +896,43 @@ if __name__ == "__main__":
     if USE_ML_GUIDANCE:
         logger_opt.info(f" ML model was used for guidance after trial {NUM_INITIAL_RANDOM_TRIALS}.")
         # Optional: Feature Importances ausgeben, wenn das Modell und die Feature-Listen existieren
-        if ml_model is not None and numeric_features_global is not None and categorical_features_global is not None:
+        if ml_model is not None:
             logger_opt.info("Attempting to calculate Feature Importances from the last trained model...")
             try:
-                # Zugriff auf Pipeline-Schritte
+                # Schritte aus der Pipeline extrahieren
                 regressor = ml_model.named_steps['regressor']
                 preprocessor_step = ml_model.named_steps['preprocessor']
 
-                # Feature-Namen aus dem Preprocessor extrahieren
-                transformed_feature_names = []
-                # Numerische zuerst (Reihenfolge wie im ColumnTransformer)
-                if 'num' in preprocessor_step.transformers_:
-                     transformed_feature_names.extend(numeric_features_global)
-
-                # Dann kategorische (OneHotEncoded)
-                if 'cat' in preprocessor_step.transformers_:
-                     cat_pipeline = preprocessor_step.named_transformers_['cat']
-                     ohe_step = cat_pipeline.named_steps['onehot']
-                     # Stelle sicher, dass categorical_features_global nicht leer ist
-                     if categorical_features_global:
-                          ohe_feature_names = ohe_step.get_feature_names_out(categorical_features_global)
-                          transformed_feature_names.extend(list(ohe_feature_names))
-                     else:
-                          logger_opt.debug("No categorical features were processed by OHE.")
-
+                # === KORREKTUR ===
+                # Benutze die eingebaute Funktion, um alle Feature-Namen in der richtigen Reihenfolge zu erhalten.
+                # Dies ersetzt die gesamte fehlerhafte manuelle Logik.
+                transformed_feature_names = preprocessor_step.get_feature_names_out()
 
                 importances = regressor.feature_importances_
 
-                # Stelle sicher, dass die Anzahl der Namen mit der Anzahl der Importances übereinstimmt
+                # Der Abgleich der Längen sollte nun immer erfolgreich sein
                 if len(transformed_feature_names) == len(importances):
                     feature_importance_df = pd.DataFrame({'feature': transformed_feature_names, 'importance': importances})
                     feature_importance_df = feature_importance_df.sort_values(by='importance', ascending=False)
-                    # Logge nur die Top N Features
+                    
                     top_n = 20
                     logger_opt.info(f"Top {top_n} Feature Importances (higher is better):")
-                    # Verwende repr() für eine saubere Darstellung im Log, falls .to_string() Probleme macht
+                    
                     try:
                         importance_string = feature_importance_df.head(top_n).to_string(index=False)
                         logger_opt.info("\n" + importance_string)
                     except Exception as str_err:
-                         logger_opt.error(f"Could not format feature importance to string: {str_err}")
-                         logger_opt.info(repr(feature_importance_df.head(top_n))) # Fallback auf repr
+                        logger_opt.error(f"Could not format feature importance to string: {str_err}")
+                        logger_opt.info(repr(feature_importance_df.head(top_n)))
 
                 else:
+                    # Dieser Fehlerfall sollte jetzt nicht mehr eintreten
                     logger_opt.error(f"Feature name count ({len(transformed_feature_names)}) mismatch with importance score count ({len(importances)}). Skipping importance display.")
-                    logger_opt.debug(f"Transformed Feature Names ({len(transformed_feature_names)}): {transformed_feature_names}")
-                    logger_opt.debug(f"Importance Scores ({len(importances)}): {importances}")
 
-
-            except AttributeError as ae:
-                 logger_opt.error(f"Could not access expected parts of the scikit-learn pipeline ('regressor', 'preprocessor', 'cat', 'onehot' etc.). Model structure might be different than expected or training failed. Error: {ae}", exc_info=True)
             except Exception as fe_err:
                 logger_opt.error(f"Could not extract or display feature importances due to an unexpected error: {fe_err}", exc_info=True)
+        elif USE_ML_GUIDANCE:
+            logger_opt.warning("ML model was not available/trained successfully. Skipping feature importance calculation.")
         elif USE_ML_GUIDANCE:
              logger_opt.warning("ML model or feature lists were not available/trained successfully. Skipping feature importance calculation.")
 
