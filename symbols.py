@@ -1,6 +1,5 @@
 symbol_liste = [
-    "AUCTIONUSDT",
-    "ORDIUSDT",
+    "FARTCOINUSDT",
 
 ]
 

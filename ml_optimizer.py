@@ -86,36 +86,40 @@ ml_feature_names = None # Store feature names used during training
 # --- Parameter Suchraum Definition ---
 # (HIER DEINEN VOLLSTÄNDIGEN param_space EINFÜGEN - unverändert)
 param_space = {
-    # Standard SL/TP oder Trailing
+    # Hauptschalter: Standard SL/TP oder Fortgeschritten (Trailing)
     'use_standard_sl_tp': [True, False],
-    'stop_loss_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 3),
-    'take_profit_parameter_binance': lambda: round(random.uniform(0.015, 0.07), 3),
-    # Trailing Stop Parameter
-    'activation_threshold': lambda: round(random.uniform(0.1, 1.0), 2),
-    'trailing_distance': lambda: round(random.uniform(0.2, 6.0), 2),
-    'adjustment_step': lambda: round(random.uniform(0.05, 1.5), 2),
-    # --- VEREINFACHUNG FÜR ML: Listen erstmal ignorieren ---
-    # 'take_profit_levels': lambda: sorted([round(random.uniform(0.5, 5.0), 1) for _ in range(random.randint(1, 3))]),
-    # 'take_profit_size_percentages': lambda: [100], # Wird in generate_random_params dynamisch gesetzt
-    'third_level_trailing_distance': lambda: round(random.uniform(0.5, 6.0), 2),
+
+    # Parameter für den Standard-Modus
+    'stop_loss_parameter_binance': lambda: round(random.uniform(0.01, 0.08), 3),
+    'take_profit_parameter_binance': lambda: round(random.uniform(0.01, 0.08), 3),
+
+    # Parameter für den Fortgeschrittenen-Modus
+    'activation_threshold': lambda: round(random.uniform(0.1, 1.5), 2),
+    'trailing_distance': lambda: round(random.uniform(0.2, 7.0), 2),
+    
+    # Zusätzliche Schalter für den Fortgeschrittenen-Modus
     'enable_breakeven': [True, False],
+    'enable_trailing_take_profit': [True, False], # KORRIGIERT: Kein Leerzeichen am Ende
+    'third_level_trailing_distance': lambda: round(random.uniform(0.5, 7.0), 2),
+
     # Filterung & Beobachtung
     'filtering_active': [False],
     'beobachten_active': [False],
-    'seite': ['both'], # 'long', 'short', 
+    'seite': ['both', 'long', 'short'],
     'min_price_change_pct_min': lambda: round(random.uniform(0.5, 5.0), 2),
     'min_price_change_pct_max': lambda: round(random.uniform(5.1, 50.0), 2),
     'price_change_lookback_minutes': lambda: random.randint(30, 60*12),
     'symbol_observation_hours': lambda: random.randint(1, 12),
     'close_position': [True, False],
-    # Zeitfilter (Beispielhaft auskommentiert)
-    #'time_filter_active': [True, False],
+
     # Positionsrichtung
     'allow_short': [True], 
     'allow_long': [True], 
+
     # Vortagesfilter
     'filter_previous_day': [False],
     'previous_day_direction': ['bullish', 'bearish'],
+
     # EMA & Trend
     'require_timeframe_alignment': [False],
     'ema_fast_parameter': lambda: random.randint(3, 30),
@@ -124,164 +128,155 @@ param_space = {
     'back_trend_periode': lambda: random.randint(3, 20),
     'min_trend_strength_parameter': lambda: round(random.uniform(0.0, 5.0), 2),
     'min_trend_duration_parameter': lambda: random.randint(1, 10),
+
     # RSI
     'rsi_period': lambda: random.randint(5, 30),
     'rsi_buy': lambda: random.randint(55, 85),
     'rsi_sell': lambda: random.randint(15, 45),
     'rsi_exit_overbought': lambda: random.randint(75, 98),
     'rsi_exit_oversold': lambda: random.randint(2, 30),
+
     # Volume
     'volume_sma': lambda: random.randint(10, 60),
     'volume_multiplier': lambda: round(random.uniform(0.8, 5.0), 2),
     'volume_entry_multiplier': lambda: round(random.uniform(0.4, 3.0), 2),
     'min_volume': lambda: round(random.uniform(0.0, 1.0), 4),
+
     # Momentum
     'use_momentum_check': [True, False],
     'momentum_lookback': lambda: random.randint(2, 40),
     'momentum': lambda: round(random.uniform(0.01, 1.0), 2),
+
     # Bollinger Bands
     'use_bb': [True, False],
     'bb_period': lambda: random.randint(10, 50),
     'bb_deviation': lambda: round(random.uniform(1.5, 4.0), 2),
+
     # MACD
     'use_macd': [True, False],
     'macd_fast_period': lambda: random.randint(5, 25),
     'macd_slow_period': lambda: random.randint(26, 60),
     'macd_signal_period': lambda: random.randint(5, 20),
+
     # ADX
     'use_adx': [True, False],
     'adx_period': lambda: random.randint(7, 40),
     'adx_threshold': lambda: round(random.uniform(15.0, 40.0), 1),
+
     # VWAP
     'use_vwap': [True, False],
     'use_advanced_vwap': [True, False],
-    # --- VEREINFACHUNG FÜR ML: Listen erstmal ignorieren ---
-    # 'advanced_vwap_periods': lambda: sorted([random.randint(10, 50), random.randint(51, 150), random.randint(151, 300)]),
     'advanced_vwap_std_threshold': lambda: round(random.uniform(0.3, 2.5), 2),
+    
     # OBV
     'use_obv': [True, False],
     'obv_period': lambda: random.randint(5, 30),
+
     # Chaikin Money Flow
     'use_chaikin_money_flow': [True, False],
     'cmf_period': lambda: random.randint(5, 40),
     'cmf_threshold': lambda: round(random.uniform(-0.3, 0.3), 2),
-    # Intervalle (werden in generate_random_params dynamisch gesetzt)
-    # 'interval_int_2', 'interval_int_3' nicht hier definieren
 }
 
-# --- Hilfsfunktionen ---
 def generate_random_params(space):
+    """
+    Generiert einen Parametersatz, respektiert die Entscheidungen aus dem Suchraum
+    und stellt die logische Konsistenz für den Backtest sicher.
+    """
     params = {}
-    # Temporär Listen-Parameter aus dem Space nehmen für die Hauptgeneration
-    space_copy = space.copy()
-    list_params_generators = {
-        'take_profit_levels': lambda: sorted([round(random.uniform(0.5, 5.0), 1) for _ in range(random.randint(1, 3))]),
-        'advanced_vwap_periods': lambda: sorted([random.randint(10, 50), random.randint(51, 150), random.randint(151, 300)])
-    }
-    # Entferne sie temporär aus dem space, wenn sie dort sind
-    space_copy.pop('take_profit_levels', None)
-    space_copy.pop('take_profit_size_percentages', None)
-    space_copy.pop('advanced_vwap_periods', None)
-
-    for name, generator in space_copy.items():
+    
+    # 1. Generiere alle Parameter direkt aus dem Suchraum.
+    #    Dies stellt sicher, dass explizite Wahlen wie `[True]` oder `[False]` respektiert werden.
+    for name, generator in space.items():
         try:
-            if callable(generator): params[name] = generator()
-            elif isinstance(generator, list): params[name] = random.choice(generator)
-            else: params[name] = generator # Falls fixe Werte drin sind
+            if callable(generator):
+                params[name] = generator()
+            elif isinstance(generator, list):
+                params[name] = random.choice(generator)
+            else:
+                params[name] = generator
         except Exception as e:
             logger_opt.error(f"Error generating parameter '{name}': {e}")
-            params[name] = None # Oder einen Standardwert setzen
+            params[name] = None
 
-    # --- Abhängigkeiten und Logik ---
-    # (Größtenteils unverändert, aber Listenparameter hinzufügen/anpassen)
+    # 2. Generiere komplexe Listen-Parameter, die immer benötigt werden könnten.
+    params['take_profit_levels'] = sorted([round(random.uniform(0.5, 6.0), 1) for _ in range(random.randint(1, 3))])
+    params['advanced_vwap_periods'] = sorted([random.randint(10, 50), random.randint(51, 150), random.randint(151, 300)])
 
-    # Generiere Listen-Parameter jetzt
-    params['take_profit_levels'] = list_params_generators['take_profit_levels']()
-    params['advanced_vwap_periods'] = list_params_generators['advanced_vwap_periods']()
-
-    # Abhängigkeiten basierend auf 'use_standard_sl_tp'
+    # 3. Erzwinge logische Konsistenz basierend auf dem Hauptschalter 'use_standard_sl_tp'.
     if params.get('use_standard_sl_tp') is True:
-        tp_binance_val = params.get('take_profit_parameter_binance', 0.05) # Hole generierten Wert
-        params['activation_threshold'] = 0.0
-        params['trailing_distance'] = 1.0
-        params['adjustment_step'] = 0.1
-        # Überschreibe 'take_profit_levels' passend zu 'take_profit_parameter_binance'
-        params['take_profit_levels'] = [round(tp_binance_val * 100, 1)]
-        params['take_profit_size_percentages'] = [100.0] # Immer 100% bei Standard TP
+        # **STANDARD-MODUS AKTIV**
+        # Deaktiviere alle fortgeschrittenen Funktionen, um einen sauberen Lauf zu gewährleisten.
         params['enable_breakeven'] = False
         params['enable_trailing_take_profit'] = False
+        params['activation_threshold'] = 0.0
+        params['trailing_distance'] = 1.0
         params['third_level_trailing_distance'] = 1.0
-    else: # Trailing Stop Logik
-        params['stop_loss_parameter_binance'] = 0.99 # Setze Standardwerte, wenn Trailing aktiv
+        
+        # Setze Take-Profit-Level auf den einen Standardwert.
+        tp_binance_val = params.get('take_profit_parameter_binance', 0.05)
+        params['take_profit_levels'] = [round(tp_binance_val * 100, 1)]
+        params['take_profit_size_percentages'] = [100.0]
+    else:
+        # **FORTGESCHRITTENER-MODUS AKTIV**
+        # Die im 'param_space' gewählten Werte für 'enable_breakeven' und 
+        # 'enable_trailing_take_profit' werden jetzt NICHT MEHR ÜBERSCHRIEBEN.
+        
+        # Setze die ungenutzten Standard-Parameter auf harmlose Werte.
+        params['stop_loss_parameter_binance'] = 0.99 
         params['take_profit_parameter_binance'] = 1.00
+        
+        # Berechne die prozentuale Aufteilung für die Multi-Take-Profit-Level.
         num_levels = len(params.get('take_profit_levels', []))
         if num_levels > 0:
-             # Gleichmäßige Verteilung der Prozente
-             base_pct = 100.0 / num_levels
-             percentages = [base_pct] * num_levels
-             # Rundungsdifferenzen dem letzten Level hinzufügen
-             total_pct = sum(p for p in percentages) # Direkt summieren
-             diff = 100.0 - total_pct
-             percentages[-1] += diff
-             params['take_profit_size_percentages'] = [round(p, 2) for p in percentages]
+            base_pct = 100.0 / num_levels
+            percentages = [base_pct] * num_levels
+            diff = 100.0 - sum(percentages)
+            if percentages: # Ensure list is not empty
+                percentages[-1] += diff
+            params['take_profit_size_percentages'] = [round(p, 2) for p in percentages]
         else:
-             params['take_profit_size_percentages'] = [] # Leere Liste, wenn keine Level da
+            params['take_profit_size_percentages'] = []
 
-        # Enable trailing TP nur wenn mind. 3 Level? (Deine alte Logik)
-        if num_levels < 3:
-             params['enable_trailing_take_profit'] = False
-             params['third_level_trailing_distance'] = 1.0 # Setze Standard, wenn deaktiviert
-        else:
-             params['enable_trailing_take_profit'] = True # Aktivieren, wenn genug Level
-
-
-    # Timeframe Alignment
-    base_interval = getattr(Z_config, 'interval', '15m') # Hole Basisintervall aus Z_config
+    # 4. Timeframe Alignment
+    base_interval = getattr(Z_config, 'interval', '15m')
     if params.get('require_timeframe_alignment') is False:
         params['interval_int_2'] = base_interval
         params['interval_int_3'] = base_interval
     else:
-        # Wenn Alignment aktiv, setze höhere Intervalle (Beispiel)
-        # Diese könnten auch Teil des param_space sein!
-        params['interval_int_2'] = '1h' # Beispiel
-        params['interval_int_3'] = '4h' # Beispiel
+        params['interval_int_2'] = '1h'
+        params['interval_int_3'] = '4h'
 
-    # Inaktive Indikatoren (unverändert)
-    def set_inactive_indicator_params(indicator_prefix, use_flag, param_names):
+    # 5. Deaktiviere Parameter für ungenutzte Indikatoren.
+    def set_inactive_indicator_params(use_flag, param_names):
         if params.get(use_flag) is False:
-            #logger_opt.debug(f"  {use_flag} is False. Setting related params to defaults.")
             for param_name in param_names:
-                 if param_name in params:
-                     # Versuche, Standardwert aus Z_config zu holen, sonst None
-                     default_value = getattr(Z_config, param_name, None)
-                     params[param_name] = default_value
-                     #logger_opt.debug(f"    Set {param_name} to default: {default_value}")
+                if param_name in params:
+                    params[param_name] = getattr(Z_config, param_name, None)
 
+    set_inactive_indicator_params('use_momentum_check', ['momentum_lookback', 'momentum'])
+    set_inactive_indicator_params('use_bb', ['bb_period', 'bb_deviation'])
+    set_inactive_indicator_params('use_macd', ['macd_fast_period', 'macd_slow_period', 'macd_signal_period'])
+    set_inactive_indicator_params('use_adx', ['adx_period', 'adx_threshold'])
+    set_inactive_indicator_params('use_advanced_vwap', ['advanced_vwap_std_threshold'])
+    set_inactive_indicator_params('use_obv', ['obv_period'])
+    set_inactive_indicator_params('use_chaikin_money_flow', ['cmf_period', 'cmf_threshold'])
 
-    set_inactive_indicator_params("Momentum", 'use_momentum_check', ['momentum_lookback', 'momentum'])
-    set_inactive_indicator_params("BB", 'use_bb', ['bb_period', 'bb_deviation'])
-    set_inactive_indicator_params("MACD", 'use_macd', ['macd_fast_period', 'macd_slow_period', 'macd_signal_period'])
-    set_inactive_indicator_params("ADX", 'use_adx', ['adx_period', 'adx_threshold'])
-    # Hier advanced_vwap_periods NICHT zurücksetzen, da es oben generiert wird
-    set_inactive_indicator_params("AdvVWAP", 'use_advanced_vwap', ['advanced_vwap_std_threshold']) # Nur std_threshold
-    set_inactive_indicator_params("OBV", 'use_obv', ['obv_period'])
-    set_inactive_indicator_params("CMF", 'use_chaikin_money_flow', ['cmf_period', 'cmf_threshold'])
+    # 6. Erzwinge logische Konsistenz zwischen Indikator-Parametern.
+    if params.get('ema_slow_parameter', 0) <= params.get('ema_fast_parameter', 0):
+        params['ema_slow_parameter'] = params.get('ema_fast_parameter', 9) + random.randint(5, 50)
+    if params.get('macd_slow_period', 0) <= params.get('macd_fast_period', 0):
+        params['macd_slow_period'] = params.get('macd_fast_period', 12) + random.randint(5, 20)
+    if params.get('rsi_buy', 50) <= params.get('rsi_sell', 50):
+        params['rsi_buy'] = params.get('rsi_sell', 30) + random.randint(10, 30)
+    if params.get('rsi_exit_overbought', 70) <= params.get('rsi_buy', 70):
+        params['rsi_exit_overbought'] = params.get('rsi_buy', 70) + random.randint(5, 15)
+    if params.get('rsi_exit_oversold', 30) >= params.get('rsi_sell', 30):
+        params['rsi_exit_oversold'] = max(1, params.get('rsi_sell', 30) - random.randint(5, 15))
+    if params.get('min_price_change_pct_max', 0) <= params.get('min_price_change_pct_min', 0):
+        params['min_price_change_pct_max'] = params.get('min_price_change_pct_min', 1) + random.uniform(0.1, 10.0)
 
-    # Konsistenzprüfungen (unverändert)
-    if 'ema_slow_parameter' in params and 'ema_fast_parameter' in params:
-        if params['ema_slow_parameter'] <= params['ema_fast_parameter']: params['ema_slow_parameter'] = params['ema_fast_parameter'] + random.randint(5, 50)
-    if 'macd_slow_period' in params and 'macd_fast_period' in params:
-        if params['macd_slow_period'] <= params['macd_fast_period']: params['macd_slow_period'] = params['macd_fast_period'] + random.randint(5, 20)
-    if 'rsi_buy' in params and 'rsi_sell' in params:
-        if params['rsi_buy'] <= params['rsi_sell']: params['rsi_buy'] = params['rsi_sell'] + random.randint(10, 30)
-    if 'rsi_exit_overbought' in params and 'rsi_buy' in params:
-         if params['rsi_exit_overbought'] <= params['rsi_buy']: params['rsi_exit_overbought'] = params['rsi_buy'] + random.randint(5, 15)
-    if 'rsi_exit_oversold' in params and 'rsi_sell' in params:
-        if params['rsi_exit_oversold'] >= params['rsi_sell']: params['rsi_exit_oversold'] = max(1, params['rsi_sell'] - random.randint(5, 15))
-    if 'min_price_change_pct_max' in params and 'min_price_change_pct_min' in params:
-        if params['min_price_change_pct_max'] <= params['min_price_change_pct_min']: params['min_price_change_pct_max'] = params['min_price_change_pct_min'] + random.uniform(0.1, 10.0)
-
-    # Konvertiere Listen in Strings für die Speicherung/Logausgabe (optional, aber gut für Konsistenz)
+    # 7. Konvertiere Listen in Strings für die CSV-Speicherung (wichtig für die Analyse).
     for key, value in params.items():
         if isinstance(value, list):
             params[key] = str(value)

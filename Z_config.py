@@ -1,5 +1,5 @@
 # Backtest - Z_config.py
-lookback_hours_parameter = 24*7*4 #Wie viele Stunden zurück soll es Backtesten? | Parameter die gut funktioniert haben in 'lookback_hours_parameter' sind gleichzusetzen mit 'fetch' in Live-Bot-Config da diese symbole per Fifo danach aussoertiert werden.
+lookback_hours_parameter = 24*7*4*8 #Wie viele Stunden zurück soll es Backtesten? | Parameter die gut funktioniert haben in 'lookback_hours_parameter' sind gleichzusetzen mit 'fetch' in Live-Bot-Config da diese symbole per Fifo danach aussoertiert werden.
 
 use_custom_backtest_datetime = False
 backtest_datetime = "2025-03-22 17:35:00" #Von hier 'lookback_hours_parameter' Std. nach hinten
@@ -43,7 +43,7 @@ take_profit_levels = [1.6]               # Optimierter Wert (war param_take_prof
 take_profit_size_percentages = [100.0]   # Optimierter Wert (war param_take_profit_size_percentages) <-- Updated from Trial 250
 third_level_trailing_distance = 1.0           # Wenn trailing_distance nicht hittet <-- Updated from Trial 250
 enable_breakeven = True                       # Optimierter Wert <-- Updated from Trial 250
-enable_trailing_take_profit = False           # Optimierter Wert (Kein spezielles Trailing für Stufe 3) <-- Updated from Trial 250
+enable_trailing_take_profit = True           # Optimierter Wert (Kein spezielles Trailing für Stufe 3) <-- Updated from Trial 250
 
 ##################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
 
